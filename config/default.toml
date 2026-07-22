@@ -1,0 +1,57 @@
+# RUDP-RT gateway default configuration (validated once at startup; no clamping)
+
+[gateway]
+bind_address = "127.0.0.1"
+port = 50000
+stream_id = 1
+max_sessions = 16
+
+[media]
+fps = 30
+frame_bytes = 12000
+media_payload_bytes = 1200
+deadline_budget = "100ms"
+
+[transport]
+window_w = 64
+max_frame_packets = 10
+rto_min = "50ms"
+rto_max = "1000ms"
+srtt_initial = "25ms"
+rttvar_initial = "12.5ms"
+
+[client]
+playout_delay = "60ms"
+jitter_buffer_frames = 64
+reorder_buffer_packets = 256
+auto_rejoin = true
+
+[queues]
+capture_queue_frames = 256
+control_queue_datagrams = 128
+metrics_queue_snapshots = 32
+timer_capacity = 4096
+consumer_queue_frames = 128
+
+[scheduling]
+turn_datagram_limit = 32
+turn_byte_limit = 32768
+token_rate_bytes_per_sec = 4194304
+token_burst_bytes = 65536
+control_reserve_bytes = 16384
+
+[keepalive]
+silence_after = "200ms"
+min_interval = "500ms"
+max_probes = 3
+ack_starvation_rto_intervals = 3
+
+[sockets]
+so_rcvbuf_request = 4194304
+so_sndbuf_request = 4194304
+so_rcvbuf_min = 262144
+so_sndbuf_min = 262144
+
+[runtime]
+drain_deadline = "1s"
+metrics_interval = "1s"
