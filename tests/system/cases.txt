@@ -1,0 +1,5 @@
+system_localhost_e2e
+system_three_clients
+system_reconnect_after_sigterm
+system_sigterm_graceful
+system_unreachable_gateway
