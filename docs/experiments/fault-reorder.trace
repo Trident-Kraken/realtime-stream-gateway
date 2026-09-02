@@ -1,0 +1,18 @@
+# trace: re-run `rudp_sim` with identical parameters and seed to
+# reproduce this record bit-for-bit (deterministic virtual clock).
+{
+  "scenario": "reorder",
+  "seed": 0,
+  "params": {"loss":0,"burst":0,"down_loss":0.02,"down_burst":0,"control_loss":0,"delay_ms":5,"down_delay_ms":5,"jitter_ms":0,"reorder":0.1,"duplicate":0,"clients":1,"frames":1000,"deadline_mode":true},
+  "simulated_ns": 46634824308,
+  "offered_frames": 1400,
+  "session_ledger": {"offered":1393,"ontime":1382,"late":0,"abandoned":3,"expired":0,"pre_admission_dropped":7,"in_flight":1},
+  "fdr_session": 0.992103,
+  "client_playout": {"ontime":1380,"late":0,"expired":3,"abandoned":2,"playout_dropped":0,"measured_delivered":1380},
+  "fdr_playout": 0.99639,
+  "latency_ms": {"p50":60,"p95":60,"p99":60,"max":60},
+  "packets": {"gw_data_sent":13850,"gw_acks_received":11904,"gw_abandons_sent":3,"c_acks_sent":0,"c_abandons_received":3},
+  "net": {"dropped":287,"duplicated":0,"delivered":39675},
+  "queue_depth": {"client_control_hwm":38,"reorder":0,"jitter":2,"gateway_control_hwm":2},
+  "invariants_ok": true
+}

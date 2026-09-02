@@ -1,0 +1,16 @@
+{
+  "scenario": "iid-010",
+  "seed": 0,
+  "params": {"loss":0.1,"burst":0,"down_loss":0.1,"down_burst":0,"control_loss":0,"delay_ms":5,"down_delay_ms":5,"jitter_ms":0,"reorder":0,"duplicate":0,"clients":1,"frames":1000,"deadline_mode":true},
+  "simulated_ns": 46661666666,
+  "offered_frames": 1400,
+  "session_ledger": {"offered":1393,"ontime":1370,"late":0,"abandoned":15,"expired":0,"pre_admission_dropped":7,"in_flight":1},
+  "fdr_session": 0.983489,
+  "client_playout": {"ontime":1369,"late":0,"expired":14,"abandoned":10,"playout_dropped":0,"measured_delivered":1369},
+  "fdr_playout": 0.982771,
+  "latency_ms": {"p50":60,"p95":60,"p99":60,"max":60},
+  "packets": {"gw_data_sent":13860,"gw_acks_received":20343,"gw_abandons_sent":15,"c_acks_sent":0,"c_abandons_received":15},
+  "net": {"dropped":1591,"duplicated":0,"delivered":35811},
+  "queue_depth": {"client_control_hwm":24,"reorder":0,"jitter":2,"gateway_control_hwm":2},
+  "invariants_ok": true
+}

@@ -1,0 +1,6 @@
+{
+  "workload": {"clients":3},
+  "arms":[
+  {"arm":"rudp-fanout","loss":0.05,"burst":0,"clients":3,"seeds":[0,1,2],"runs":[{"seed":0,"ontime":31059,"late":0,"expired":860,"abandoned_or_retx":14,"offered":31497,"net_dropped":18894,"fdr_session":0.999397,"fdr_playout":0.97263,"p50_ms":60,"p95_ms":60,"p99_ms":60,"max_ms":60,"cpu_s":3.30854,"mem_hwm_kb":9052},{"seed":1,"ontime":31072,"late":0,"expired":823,"abandoned_or_retx":27,"offered":31497,"net_dropped":19130,"fdr_session":0.999048,"fdr_playout":0.973373,"p50_ms":60,"p95_ms":60,"p99_ms":60,"max_ms":60,"cpu_s":3.29792,"mem_hwm_kb":9292},{"seed":2,"ontime":31068,"late":0,"expired":849,"abandoned_or_retx":19,"offered":31500,"net_dropped":19014,"fdr_session":0.999302,"fdr_playout":0.972821,"p50_ms":60,"p95_ms":60,"p99_ms":60,"max_ms":60,"cpu_s":3.30263,"mem_hwm_kb":9292}],"fdr_playout_mean":0.972941,"fdr_playout_ci":0.000371201,"p99_ms_mean":60,"p99_ms_ci":0}
+  ]
+}

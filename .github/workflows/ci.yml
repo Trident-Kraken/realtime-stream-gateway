@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-test:
+    name: Build & Test (Linux GCC)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential ninja-build
+
+      - name: Configure CMake
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DRUDP_WERROR=ON
+
+      - name: Build all targets
+        run: cmake --build build -j$(nproc)
+
+      - name: Run test suite (74 tests)
+        run: ctest --test-dir build --output-on-failure -j1
+
+      - name: Run fault matrix & determinism replay
+        run: ./tools/run_fault_matrix.sh docs/experiments
+
+  sanitizers:
+    name: Sanitizers (ASan / UBSan / TSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential ninja-build
+
+      - name: Build & Test ASan / UBSan
+        run: |
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=address -DRUDP_WERROR=OFF
+          cmake --build build-asan -j$(nproc)
+          ctest --test-dir build-asan --output-on-failure -j1 -E "system\."
+
+      - name: Build & Test TSan
+        run: |
+          cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=thread -DRUDP_WERROR=OFF
+          cmake --build build-tsan -j$(nproc)
+          ctest --test-dir build-tsan --output-on-failure -j1 -R "unit|integration|fault"
