@@ -46,7 +46,6 @@ struct PacketCounters {
   std::uint64_t stale_control = 0;
   std::uint64_t control_rate_dropped = 0;
   std::uint64_t control_queue_dropped = 0;
-  std::uint64_t command_dropped = 0;
   std::uint64_t send_would_block = 0;
   std::uint64_t send_errors = 0;
   std::uint64_t unknown_session_datagrams = 0;
@@ -69,7 +68,7 @@ struct PacketCounters {
     storage_full_drops += o.storage_full_drops; malformed += o.malformed;
     protocol_violations += o.protocol_violations; stale_control += o.stale_control;
     control_rate_dropped += o.control_rate_dropped; control_queue_dropped += o.control_queue_dropped;
-    command_dropped += o.command_dropped; send_would_block += o.send_would_block;
+    send_would_block += o.send_would_block;
     send_errors += o.send_errors; unknown_session_datagrams += o.unknown_session_datagrams;
     rtt_samples += o.rtt_samples;
     stream_mismatch += o.stream_mismatch;

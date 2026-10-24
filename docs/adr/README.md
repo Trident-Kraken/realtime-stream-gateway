@@ -21,4 +21,5 @@
 | 0017 | Admission early-exit threshold capped at D/2 | Accepted (Phase 2) |
 | 0018 | RTT samples only on single-packet cumulative advances | Accepted (Phase 2) |
 | 0019 | Frame dependency awareness, cascade abandon, broken GOP fast pruning | Accepted (Phase 6) |
+| 0020 | Deep-module consolidation — PlayoutPipeline, EventLoop, SimCluster, Session liveness | Accepted (post-Phase-6 review) |
 

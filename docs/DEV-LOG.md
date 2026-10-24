@@ -136,6 +136,43 @@ unresolved questions, next action.
   reproduce every experiment bit-for-bit, and trace every design override to
   an ADR.
 
+## Architecture review — deep-module consolidation (ADR-0020)
+
+- **Command:** `ctest -j1` + sanitizer suites + `tools/replay_trace.sh` +
+  `rudp_bench --seed 0` regression after every consolidation step.
+- **Result:** the review's five candidates dispositioned. New deep modules:
+  **PlayoutPipeline** (client receive path: receiver → assembler → jitter cooperation,
+  ABANDON dead-frame fan-out, consumer queue, playout accounting; RTP-timeline math
+  3 copies → 1, `rtp_to_mono`), **EventLoop** (epoll/timerfd/signalfd + timer heap +
+  wake-stage order; Gateway/Client became policy Delegates, 8 copied loop blocks and the
+  client pop-top timer hack deleted), **SimCluster** (single virtual fan-out bootstrap
+  behind rudp_sim, bench RUDP arms, and the harnesses), and **Session liveness
+  internalization** (probe/watchdog/ACK-starvation formulas single-sited in `Session`;
+  write-only `last_peer_activity` removed). Notes cleanup: 3 validated-but-unwired
+  config knobs wired (`timer_capacity`, `capture_queue_frames`,
+  `metrics_queue_snapshots`), unwired `command_queue_capacity` knob + dead
+  `command_dropped` counter removed, `SourceLedger` accounting folded into the ledger,
+  dead code (`any_sacked`, `enqueue_nack` stub, duplicate `remaining_ms`) deleted.
+- **Parity:** ADR-0009's promised fault adapter landed (`tests/unit/net_faults.cpp`);
+  `VirtualSocket::arm_would_block()` makes the pending-datagram path sim-testable
+  (`integ_pending_datagram_recovered`). SimDriver keeps a virtual-time loop by design
+  (see ADR-0020 rejected alternatives).
+- **Files:** `include/rudp_rt/{playout,event_loop,sim,session,receiver,metrics}.hpp`,
+  `src/transport/playout_pipeline.cpp`, `src/runtime/event_loop.cpp`,
+  `src/runtime/{gateway,client}.cpp`, `src/session/*`, `tests/sim_fixture.hpp`,
+  `tests/unit/net_faults.cpp`, `CONTEXT.md`, `CMakeLists.txt`.
+- **Postmortems:**
+  1. SimCluster's constructor initially passed the caller's `Config` argument to
+     GatewayNode (which stores `const Config&`), not the cluster's own member — a
+     dangling reference; 8 integration tests failed non-deterministically. Fixed by
+     binding nodes to the member; added the rule to the constructor comment.
+  2. SimDriver's quiescence break silently ends short `run()` windows in the
+     join-to-first-frame gap (~12 ms); scenario harnesses now use tick hooks or
+     windows past the gap.
+- **Unresolved:** none blocking. `gop_size` remains a source-level parameter (not a
+  runtime config knob) — deliberate for the ADR-0019 extension scope.
+- **Next:** ADR-0019 cascade-abandon extension (below).
+
 ## Phase 6 extension — Frame dependency awareness and cascade abandon
 
 - **Command:** `ctest -j1` (full suite: 74 tests green).

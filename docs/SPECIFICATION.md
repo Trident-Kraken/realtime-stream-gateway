@@ -11,7 +11,7 @@ Build, test, and document a deterministic deadline-aware reliable media transpor
 
 This is not a generic UDP demo and not a production Internet protocol. It is a bounded, explainable laboratory implementation whose behavior is defined by tests and invariants.
 
-The repository currently contains design, requirements, decision, invariant, and audit documents but no implementation. Do not assume that a missing source file or API is already defined.
+At handoff time the repository contained design, requirements, decision, invariant, and audit documents but no implementation; the shipped implementation is gated per §7 and checkpointed in `docs/DEV-LOG.md`.
 
 ### Handoff snapshot
 
@@ -128,7 +128,7 @@ Virtual tests: the same Sender/Receiver objects connected by VirtualNetwork.
 - Capture, runtime commands, worker failures, and shutdown use `eventfd` watched by Reactor.
 - UDP is non-blocking and drained to `EAGAIN` under level-triggered `epoll`.
 - One `timerfd` wakes Reactor; the monotonic expiry heap is authoritative. Virtual tests call the same timer-dispatch API without a real `timerfd`.
-- Each Reactor iteration processes, in order: commands/signals, readable UDP, due timers, capture queue, then bounded writes.
+- Each Reactor iteration processes: signals and stop commands surfaced by the wait, due timer entries popped from the heap, readable UDP drained to EAGAIN, the capture queue, then bounded writes (ADR-0020 fixes this order inside EventLoop).
 - Per-session scheduling is round-robin. A session may emit at most 32 datagrams or 32 KiB per turn, whichever comes first.
 - Control traffic has priority over new DATA. ABANDON has priority over retransmitted DATA; retransmitted DATA has priority over new DATA.
 - A session has a byte token bucket: default rate 4 MiB/s and burst 64 KiB. Control packets have a reserved 16 KiB budget and cannot be starved by DATA.
@@ -143,8 +143,8 @@ Virtual tests: the same Sender/Receiver objects connected by VirtualNetwork.
 | Receiver reorder buffer | 256 packets | Drop newest unreported packet | Client receiver |
 | Jitter buffer | 64 frames | Drop oldest not-yet-delivered frame; count `playout_dropped` | Client |
 | Metrics snapshots | 32 | Replace oldest non-final snapshot; final snapshot is never dropped | Reactor -> Metrics |
-| Runtime commands | 64 | Reject command and count `command_dropped` | Command producer -> Reactor |
-| Timer entries | 4096 per process | Refuse new session/resource and emit `RESOURCE_EXHAUSTED` | Reactor |
+| Runtime commands | eventfd wake | Stop is a wake; no command queue or drops | Command producer -> Reactor |
+| Timer entries | 4096 per process (configurable) | Refuse new session/resource and emit `RESOURCE_EXHAUSTED` | Reactor |
 
 The source design proposed producer-side “drop oldest” for SPSC. That policy is rejected in v1 because it violates ordinary SPSC ownership at the full boundary. The safe, frozen behavior is producer-side drop newest; no producer may destroy or overwrite a consumer-owned slot.
 
@@ -260,22 +260,26 @@ The project maintains this directory structure unless an ADR explains an archite
 │   ├── wire.hpp               # header/control/RTP codec contracts
 │   ├── network.hpp            # Datagram, Endpoint, INetwork
 │   ├── sender.hpp             # TxFrame/TxPacket state machine
-│   ├── receiver.hpp           # receive window and ACK/NACK state
-│   ├── session.hpp            # session lifecycle and generation
+│   ├── receiver.hpp           # receive window, assembler, jitter buffer
+│   ├── playout.hpp            # PlayoutPipeline — client receive path (ADR-0020)
+│   ├── session.hpp            # session lifecycle, nodes, generation
 │   ├── metrics.hpp            # snapshots and accounting
-│   └── runtime.hpp            # Gateway/Client lifecycle
+│   ├── event_loop.hpp         # EventLoop reactor shell + timer heap (ADR-0020)
+│   ├── sim.hpp                # VirtualClock/VirtualNetwork/SimDriver/SimCluster
+│   ├── config.hpp             # Config and TOML loading contract
+│   └── runtime.hpp            # Gateway/Client lifecycle over EventLoop
 ├── src/
 │   ├── codec/{rudp_codec.cpp,rtp_codec.cpp}
-│   ├── transport/{sender.cpp,receiver.cpp,frame_assembler.cpp,jitter_buffer.cpp}
+│   ├── transport/{sender.cpp,receiver.cpp,frame_assembler.cpp,jitter_buffer.cpp,playout_pipeline.cpp}
 │   ├── session/{session_manager.cpp,session.cpp}
-│   ├── runtime/{gateway.cpp,client.cpp,reactor.cpp,timer_heap.cpp,socket_network.cpp}
+│   ├── runtime/{gateway.cpp,client.cpp,event_loop.cpp,reactor.cpp,timer_heap.cpp,socket_network.cpp,config.cpp}
 │   ├── media/{synthetic_source.cpp,camera_source.cpp,packetizer.cpp}
 │   └── metrics/{metrics.cpp,report.cpp}
 ├── apps/{gateway_main.cpp,client_main.cpp,sim_main.cpp,bench_main.cpp}
 ├── tests/{unit,integration,fault,property,system}
 ├── tools/{run_fault_matrix.sh,run_benchmarks.sh,replay_trace.sh}
 ├── config/{default.toml,benchmark.toml}
-└── docs/{adr,experiments,protocol.md}
+└── docs/{adr,experiments,protocol.md,SPECIFICATION.md,DEV-LOG.md}
 ```
 
 Required interface properties:

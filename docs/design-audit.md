@@ -1,6 +1,8 @@
 # RUDP-RT Design Audit Summary
 
-**Status**: Blocking findings remain open.
+**Status**: All blocking findings were resolved during implementation (see
+[`DEV-LOG.md`](DEV-LOG.md) phases 0–6 for the per-finding postmortems); the
+reports are archived here for reference.
 
 Detailed reports:
 

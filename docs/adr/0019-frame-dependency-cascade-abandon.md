@@ -21,7 +21,7 @@
      - Its sequence numbers are merged into the pending `ABANDON` ranges (`normalize_abandon_ranges`).
      - `counters_.cascade_abandons` is incremented.
   3. **Broken GOP Fast Pruning (Pre-Admission Drop):**
-     When a newly captured `DELTA_FRAME` is offered to `TransportSender::on_frame`, if its referenced dependency is already recorded as abandoned, the frame is rejected before admission (`admissions[].admitted = false`). It does not allocate sequence numbers or consume `window_w` slots, and is accounted as `PRE_ADMISSION_DROPPED` in the session ledger.
+     When a newly captured `DELTA_FRAME` is offered to `TransportSender::on_frame`, if its referenced dependency is already recorded as abandoned, the frame is rejected before admission (`admissions[].admitted = false`). It does not allocate sequence numbers or consume `window_w` slots, and is accounted as `PRE_ADMISSION_DROPPED` in the session ledger. It also increments `counters_.cascade_abandons`, so the counter aggregates both cascade abandons and pre-admission prunes — every frame avoided by dependency awareness.
   4. **Keyframe Request Signaling (PLI):**
      When a cascade abandon occurs, `SenderOutput::keyframe_requested` is set to `true`. The runtime Gateway propagates this signal to the `IFrameSource` via `request_keyframe()`, triggering immediate generation of a fresh `KEY_FRAME` to reset the GOP and restore visual playback as early as possible.
   5. **Conservation and Wire Invariants:**
