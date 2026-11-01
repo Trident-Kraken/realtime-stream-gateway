@@ -92,7 +92,7 @@ void Client::drain_input(MonoNs now) {
 
 void Client::on_timer(const TimerEntry& e, MonoNs now) {
   if (e.kind == TimerKind::SESSION_SCAN) {
-    scan_armed_ = false;
+    scan_deadline_.reset();
     node_->on_timer(now);
   }
 }
@@ -100,16 +100,18 @@ void Client::on_timer(const TimerEntry& e, MonoNs now) {
 bool Client::pump(INetwork& net, MonoNs now) { return node_->pump(net, now); }
 
 void Client::after_wake(MonoNs) {
-  // One recurring scan entry at the client core's next deadline. The guard
-  // keeps at most one outstanding entry, so a full heap cannot happen; if
-  // push ever fails the next wake re-arms.
-  if (scan_armed_) return;
-  if (auto deadline = node_->next_deadline()) {
+  // Keep the earliest deadline armed in the timer heap (matching
+  // Gateway::after_wake); when an incoming packet schedules an earlier
+  // playout/expiry deadline than the currently armed keepalive timer,
+  // push the earlier entry so timerfd wakes on time.
+  const auto deadline = node_->next_deadline();
+  if (!deadline) return;
+  if (!scan_deadline_ || *deadline < *scan_deadline_) {
     TimerEntry e;
     e.kind = TimerKind::SESSION_SCAN;
     e.deadline = *deadline;
     if (loop_.push_timer(e)) {
-      scan_armed_ = true;
+      scan_deadline_ = *deadline;
     }
   }
 }

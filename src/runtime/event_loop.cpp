@@ -124,7 +124,9 @@ void EventLoop::arm_timerfd(MonoNs now) {
   itimerspec its{};
   if (auto top = timers_.peek()) {
     MonoNs delta = top->deadline - now;
-    if (delta < 0) delta = 0;
+    // A zero it_value disarms timerfd; clamp already-due timers to 1 ns so
+    // epoll wakes immediately instead of disarming the timer heap.
+    if (delta <= 0) delta = 1;
     its.it_value.tv_sec = static_cast<time_t>(delta / kNsPerSec);
     its.it_value.tv_nsec = static_cast<long>(delta % kNsPerSec);
   }
@@ -164,9 +166,6 @@ void EventLoop::run(Delegate& delegate, IClock& clock, MonoNs end_at) {
         std::uint64_t expirations = 0;
         while (::read(timer_fd_, &expirations, sizeof(expirations)) > 0) {
         }
-        while (auto e = timers_.pop_due(post)) {
-          delegate.on_timer(*e, post);
-        }
       } else if (net_ != nullptr && fd == net_fd_) {
         if (events[i].events & (EPOLLERR | EPOLLHUP)) {
           delegate.on_socket_error();
@@ -175,6 +174,10 @@ void EventLoop::run(Delegate& delegate, IClock& clock, MonoNs end_at) {
         auto it = custom_fds_.find(fd);
         if (it != custom_fds_.end()) it->second();
       }
+    }
+
+    while (auto e = timers_.pop_due(post)) {
+      delegate.on_timer(*e, post);
     }
 
     if (stop_requested && !stop_notified) {

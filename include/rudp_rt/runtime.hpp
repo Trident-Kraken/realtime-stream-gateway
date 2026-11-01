@@ -81,19 +81,19 @@ class SpscSnapshotQueue {
     const std::size_t tail = tail_.load(std::memory_order_acquire);
     if (head - tail == capacity_) {
       if (s.is_final) {
-        // Replace the oldest non-final snapshot IN PLACE; the final snapshot
-        // is never dropped (spec §3.3, INV-19).
-        for (std::size_t i = tail; i < head; ++i) {
-          auto& slot = items_[i % capacity_];
-          if (!slot.is_final) {
-            slot = std::move(s);
-            dropped_non_final_++;
-            return true;
-          }
+        // Never mutate items_[tail..head) from the producer while the consumer
+        // may be reading items_[tail % capacity_] (INV-11/INV-13). Publish the
+        // final snapshot into a dedicated overflow slot; the consumer drops
+        // the oldest non-final entry on its own side and drains this slot last.
+        if (!has_overflow_final_.load(std::memory_order_acquire)) {
+          overflow_final_ = std::move(s);
+          has_overflow_final_.store(true, std::memory_order_release);
+          dropped_non_final_.fetch_add(1, std::memory_order_relaxed);
+          return true;
         }
-        return false;  // only final snapshots queued (nothing to replace)
+        return false;  // overflow final slot already occupied
       }
-      dropped_non_final_++;
+      dropped_non_final_.fetch_add(1, std::memory_order_relaxed);
       return false;
     }
     items_[head % capacity_] = std::move(s);
@@ -102,12 +102,33 @@ class SpscSnapshotQueue {
   }
 
   bool try_pop(MetricsSnapshot& out) {
-    const std::size_t tail = tail_.load(std::memory_order_relaxed);
+    std::size_t tail = tail_.load(std::memory_order_relaxed);
     const std::size_t head = head_.load(std::memory_order_acquire);
-    if (tail == head) return false;
-    out = std::move(items_[tail % capacity_]);
-    tail_.store(tail + 1, std::memory_order_release);
-    return true;
+    if (has_overflow_final_.load(std::memory_order_acquire) &&
+        head - tail == capacity_) {
+      // Evict the oldest non-final snapshot on the consumer side to make room
+      // for the overflow final snapshot while preserving chronological order.
+      for (std::size_t i = tail; i < head; ++i) {
+        if (!items_[i % capacity_].is_final) {
+          if (i != tail) {
+            items_[i % capacity_] = std::move(items_[tail % capacity_]);
+          }
+          ++tail;
+          tail_.store(tail, std::memory_order_release);
+          break;
+        }
+      }
+    }
+    if (tail < head) {
+      out = std::move(items_[tail % capacity_]);
+      tail_.store(tail + 1, std::memory_order_release);
+      return true;
+    }
+    if (has_overflow_final_.exchange(false, std::memory_order_acquire)) {
+      out = std::move(overflow_final_);
+      return true;
+    }
+    return false;
   }
 
   std::uint64_t dropped_non_final() const {
@@ -119,6 +140,8 @@ class SpscSnapshotQueue {
   std::size_t capacity_;
   alignas(64) std::atomic<std::size_t> head_{0};
   alignas(64) std::atomic<std::size_t> tail_{0};
+  MetricsSnapshot overflow_final_{};
+  std::atomic<bool> has_overflow_final_{false};
   std::atomic<std::uint64_t> dropped_non_final_{0};
 };
 
@@ -323,7 +346,7 @@ class Client final : private EventLoop::Delegate {
   std::unique_ptr<MetricsWorker> metrics_;
   std::unique_ptr<EventFd> command_wake_;
   bool running_ = false;
-  bool scan_armed_ = false;
+  std::optional<MonoNs> scan_deadline_;
   std::string metrics_path_ = "client_metrics.jsonl";
 };
 

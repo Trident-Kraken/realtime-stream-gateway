@@ -113,9 +113,38 @@ RUDP_TEST(snapshot_queue_final_never_dropped) {
   MetricsSnapshot out1, out2;
   RUDP_CHECK(q.try_pop(out1));
   RUDP_CHECK(q.try_pop(out2));
-  // The final snapshot replaced the oldest non-final in place (spec §3.3)
-  // and is preserved for the consumer (INV-19).
-  RUDP_CHECK(out1.is_final || out2.is_final);
+  // The final snapshot replaced the oldest non-final in order (spec §3.3)
+  // and is preserved for the consumer (INV-19) without producer-side races.
+  RUDP_CHECK(!out1.is_final);
+  RUDP_CHECK(out2.is_final);
+
+  // Concurrent producer/consumer stress under overflow + final publication.
+  SpscSnapshotQueue cq(4);
+  std::atomic<bool> saw_final{false};
+  std::thread consumer([&] {
+    while (!saw_final.load(std::memory_order_relaxed)) {
+      MetricsSnapshot s;
+      if (cq.try_pop(s)) {
+        if (s.is_final) saw_final.store(true, std::memory_order_relaxed);
+      } else {
+        std::this_thread::yield();
+      }
+    }
+  });
+  for (int i = 0; i < 200; ++i) {
+    MetricsSnapshot snap;
+    snap.taken_at = i;
+    snap.clock_mode = "virtual";
+    cq.try_push(std::move(snap));
+  }
+  MetricsSnapshot fin;
+  fin.is_final = true;
+  fin.taken_at = 999;
+  while (!cq.try_push(fin)) {
+    std::this_thread::yield();
+  }
+  consumer.join();
+  RUDP_CHECK(saw_final.load());
 }
 
 RUDP_TEST(timer_heap_ordering_and_tiebreak) {
