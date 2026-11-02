@@ -109,4 +109,52 @@ RUDP_TEST(session_send_error_tears_down_session) {
   RUDP_CHECK(sessions[0].teardown_cause == TeardownCause::SOCKET_ERROR);
 }
 
+RUDP_TEST(control_rate_limit_evicts_stale_endpoints) {
+  VirtualClock clock;
+  Config cfg;
+  GatewayNode node(cfg, clock, [] { return 42u; });
+
+  // Flood 1024 distinct spoofed endpoints using unknown stream_id (2) so
+  // rate_limits_ reaches kMaxTrackedEndpoints without creating sessions.
+  for (std::uint32_t i = 0; i < 1024; ++i) {
+    Endpoint ep{htonl(0x0A010000u + i), htons(30000)};
+    node.on_datagram(join_ping(ep, 2), clock.now());
+  }
+  // Immediate 1025th endpoint within the same second is rate-dropped.
+  const Endpoint fresh_ep{htonl(0x0A020001u), htons(30001)};
+  node.on_datagram(join_ping(fresh_ep, 1), clock.now());
+  RUDP_CHECK_EQ(node.counters().control_rate_dropped, 1u);
+  RUDP_CHECK_EQ(node.session_count(), 0u);
+
+  // After >= 1s, stale non-session entries are evicted so legitimate clients
+  // can join without permanent lockout.
+  clock.advance(kNsPerSec);
+  node.on_datagram(join_ping(fresh_ep, 1), clock.now());
+  RUDP_CHECK_EQ(node.session_count(), 1u);
+}
+
+RUDP_TEST(dead_session_does_not_block_max_sessions) {
+  VirtualClock clock;
+  Config cfg;
+  cfg.max_sessions = 1;
+  GatewayNode node(cfg, clock, [] { return 42u; });
+
+  const Endpoint ep1{htonl(0x0A000001u), htons(40001)};
+  node.on_datagram(join_ping(ep1, 1), ns_from_ms(5));
+  RUDP_CHECK_EQ(node.session_count(), 1u);
+
+  ScriptedNetwork net;
+  net.script = {SendStatus::UNREACHABLE};
+  (void)node.pump(net, ns_from_ms(5));  // ep1 session dies on send error
+
+  // A new client ep2 can immediately join even though ep1's dead session record
+  // is still retained in sessions_ for final telemetry collection.
+  const Endpoint ep2{htonl(0x0A000002u), htons(40002)};
+  node.on_datagram(join_ping(ep2, 1), ns_from_ms(10));
+  const auto sessions = node.collect_sessions();
+  RUDP_CHECK_EQ(sessions.size(), 2u);
+  RUDP_CHECK_EQ(sessions[0].state, std::string("dead"));
+  RUDP_CHECK_EQ(sessions[1].state, std::string("established"));
+}
+
 }  // namespace rudp_test

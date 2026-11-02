@@ -296,7 +296,12 @@ void GatewayNode::handle_join(Session* existing, const Endpoint& peer,
     counters_.stale_control++;
     return;
   }
-  if (static_cast<int>(sessions_.size()) >= cfg_.max_sessions &&
+  std::size_t active_sessions = 0;
+  for (const auto& [k, s] : sessions_) {
+    (void)k;
+    if (!s.dead) ++active_sessions;
+  }
+  if (static_cast<int>(active_sessions) >= cfg_.max_sessions &&
       (existing == nullptr || existing->dead)) {
     send_pong_node(peer, ping.nonce, PongStatus::REJECT_MAX_SESSIONS, 0, 0);
     return;
@@ -442,11 +447,21 @@ void GatewayNode::offer_frame(MediaFrame&& frame, MonoNs now) {
   if (shutting_down_) return;  // shutdown barrier (INV-18)
   if (sessions_.empty()) return;  // zero-session fan-out: no ledger entries
   // Deterministic iteration order: std::map key order (endpoint, stream).
+  Session* last_live = nullptr;
+  for (auto& [key, s] : sessions_) {
+    (void)key;
+    if (!s.dead) last_live = &s;
+  }
+  if (last_live == nullptr) return;
   for (auto& [key, s] : sessions_) {
     (void)key;
     if (s.dead) continue;
-    MediaFrame copy = frame;  // v1: no cross-session payload sharing (D-31)
-    s.sender.on_frame(std::move(copy));
+    if (&s == last_live) {
+      s.sender.on_frame(std::move(frame));
+    } else {
+      MediaFrame copy = frame;  // v1: no cross-session payload sharing (D-31)
+      s.sender.on_frame(std::move(copy));
+    }
     route_sender_output(s);
   }
   std::uint64_t mem = 0;
@@ -547,8 +562,22 @@ bool GatewayNode::control_rate_admit(const Endpoint& peer, MonoNs now) {
   auto it = rate_limits_.find(peer);
   if (it == rate_limits_.end()) {
     if (rate_limits_.size() >= kMaxTrackedEndpoints) {
-      counters_.control_rate_dropped++;
-      return false;
+      auto oldest = rate_limits_.end();
+      for (auto cur = rate_limits_.begin(); cur != rate_limits_.end(); ++cur) {
+        const auto s_it = sessions_.find({cur->first, cfg_.stream_id});
+        if (s_it != sessions_.end() && !s_it->second.dead) continue;
+        if (oldest == rate_limits_.end() ||
+            cur->second.last_seen < oldest->second.last_seen) {
+          oldest = cur;
+        }
+      }
+      if (oldest != rate_limits_.end() &&
+          now - oldest->second.last_seen >= kNsPerSec) {
+        rate_limits_.erase(oldest);
+      } else {
+        counters_.control_rate_dropped++;
+        return false;
+      }
     }
     RateState rs;
     rs.bucket.configure(100, 32);  // ADR-0013
