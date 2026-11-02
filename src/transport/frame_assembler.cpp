@@ -23,18 +23,13 @@ MonoNs FrameAssembler::playout_for(std::uint32_t rtp_timestamp) const {
          playout_delay_;
 }
 
-std::uint32_t FrameAssembler::key_of(std::uint32_t frame_id) const {
-  return frame_id - frame_key_base_;
-}
-
 FrameAssembler::RxFrame* FrameAssembler::find_frame(std::uint32_t frame_id) {
-  const auto it = frames_.find(key_of(frame_id));
+  const auto it = frames_.find(frame_id);
   return it == frames_.end() ? nullptr : &it->second;
 }
 
 DataClassification FrameAssembler::validate_descriptor(
     const AcceptedPacket& packet) {
-  if (!frame_key_base_valid_) return DataClassification::VALID;  // new frame
   RxFrame* f = find_frame(packet.frame_id);
   if (f == nullptr) return DataClassification::VALID;  // unknown: create later
   if (f->dead) return DataClassification::DESCRIPTOR_CONFLICT;
@@ -52,17 +47,13 @@ AssemblerOutput FrameAssembler::on_packet(AcceptedPacket&& packet) {
   RxFrame* f = find_frame(packet.frame_id);
   if (f == nullptr) {
     if (frames_.size() >= static_cast<std::size_t>(max_tracked_frames_)) {
-      // Bounded frame table: expire the oldest incomplete frames (INV-12).
+      // Bounded frame table: expire the oldest incomplete frames (INV-12)
+      // without invalidating the keys of remaining tracked frames.
       while (frames_.size() >= static_cast<std::size_t>(max_tracked_frames_)) {
         auto oldest = frames_.begin();
         out.expired_frames.push_back(oldest->second.frame_id);
         frames_.erase(oldest);
       }
-      frame_key_base_valid_ = false;
-    }
-    if (!frame_key_base_valid_) {
-      frame_key_base_ = packet.frame_id;
-      frame_key_base_valid_ = true;
     }
     RxFrame nf;
     nf.frame_id = packet.frame_id;
@@ -71,8 +62,7 @@ AssemblerOutput FrameAssembler::on_packet(AcceptedPacket&& packet) {
     nf.frame_count = packet.frame_count;
     nf.stream_id = packet.stream_id;
     nf.fragments.resize(nf.frame_count);
-    const auto key = key_of(packet.frame_id);
-    auto [it, inserted] = frames_.emplace(key, std::move(nf));
+    auto [it, inserted] = frames_.emplace(packet.frame_id, std::move(nf));
     (void)inserted;
     f = &it->second;
   }
@@ -91,8 +81,7 @@ AssemblerOutput FrameAssembler::on_packet(AcceptedPacket&& packet) {
   // Completion check (INV-08): all required indexes present.
   if (f->received_count == f->frame_count) {
     out.completed.push_back(complete_frame(*f));
-    frames_.erase(key_of(f->frame_id));
-    if (frames_.empty()) frame_key_base_valid_ = false;
+    frames_.erase(f->frame_id);
   }
   return out;
 }
@@ -125,7 +114,6 @@ AssemblerOutput FrameAssembler::on_timer(MonoNs now) {
     if (playout_for(f.rtp_timestamp) <= now) {
       out.expired_frames.push_back(f.frame_id);  // EXPIRED (ADR-0006)
       it = frames_.erase(it);
-      if (frames_.empty()) frame_key_base_valid_ = false;
     } else {
       ++it;
     }
@@ -149,7 +137,6 @@ void FrameAssembler::on_abandon_ranges(const std::vector<AbandonRange>& ranges,
     if (covered) {
       dead_out.push_back(f.frame_id);
       it = frames_.erase(it);
-      if (frames_.empty()) frame_key_base_valid_ = false;
     } else {
       ++it;
     }
@@ -157,9 +144,7 @@ void FrameAssembler::on_abandon_ranges(const std::vector<AbandonRange>& ranges,
 }
 
 void FrameAssembler::on_frame_dead(std::uint32_t frame_id) {
-  if (!frame_key_base_valid_) return;
-  frames_.erase(key_of(frame_id));
-  if (frames_.empty()) frame_key_base_valid_ = false;
+  frames_.erase(frame_id);
 }
 
 std::optional<MonoNs> FrameAssembler::next_expiry_deadline() const {

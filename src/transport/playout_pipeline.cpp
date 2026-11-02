@@ -96,6 +96,9 @@ std::optional<MonoNs> PlayoutPipeline::next_deadline() const {
   if (auto t = jitter_.next_delivery_deadline()) {
     if (!best || *t < *best) best = *t;
   }
+  if (!best) {
+    best = receiver_.next_nack_deadline();
+  }
   return best;
 }
 
@@ -124,8 +127,8 @@ void PlayoutPipeline::process_accepted(std::vector<AcceptedPacket>& accepted,
       receiver_.mark_frame_dead(dead);
     }
     for (const std::uint32_t overflow_fid : aout.expired_frames) {
-      (void)overflow_fid;
       delivery_expired_++;  // frame-table overflow expiry (INV-12)
+      jitter_.push_dead(overflow_fid);
     }
     for (auto& cf : aout.completed) {
       for (auto& delivery : jitter_.push(std::move(cf), now)) {

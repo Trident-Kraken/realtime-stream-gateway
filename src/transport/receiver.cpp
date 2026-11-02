@@ -35,16 +35,17 @@ void UdpReceiver::teardown() {
 }
 
 bool UdpReceiver::frame_dead(std::uint32_t frame_id) const {
-  return dead_frames_.count(frame_id) != 0;
+  return std::find(dead_frames_.begin(), dead_frames_.end(), frame_id) !=
+         dead_frames_.end();
 }
 
 void UdpReceiver::mark_frame_dead(std::uint32_t frame_id) {
+  if (frame_dead(frame_id)) return;
   if (dead_frames_.size() >= 256) {
-    // Bounded tombstones: drop the oldest by serial order relative to the
-    // smallest key (frames arrive in increasing serial order in practice).
-    dead_frames_.erase(dead_frames_.begin());
+    // Bounded FIFO tombstones: wrap-safe across the 2^32 frame_id boundary.
+    dead_frames_.pop_front();
   }
-  dead_frames_[frame_id] = 1;
+  dead_frames_.push_back(frame_id);
 }
 
 void UdpReceiver::set_descriptor_hooks(
@@ -101,7 +102,7 @@ ControlOutput UdpReceiver::on_datagram(const Datagram& datagram, MonoNs now) {
   }
 
   const std::uint32_t seq = h.seq;
-  if (dead_frames_.count(h.frame_id) != 0) {
+  if (frame_dead(h.frame_id)) {
     counters_.dead_frame_drops++;
     return out;
   }
@@ -197,6 +198,24 @@ void UdpReceiver::prune_hole_state() {
       ++it;
     }
   }
+  abandon_ranges_.erase(
+      std::remove_if(abandon_ranges_.begin(), abandon_ranges_.end(),
+                     [this](const AbandonRange& r) {
+                       return seq_lt(r.end, recv_next_);
+                     }),
+      abandon_ranges_.end());
+}
+
+std::optional<MonoNs> UdpReceiver::next_nack_deadline() const {
+  if (!synced_ || hole_last_nack_.empty()) return std::nullopt;
+  std::optional<MonoNs> best;
+  for (const auto& [seq, last] : hole_last_nack_) {
+    if (storage_.count(seq) != 0) continue;
+    if (seq_covered_by_abandon(seq)) continue;
+    const MonoNs due = last + cfg_.nack_throttle_srtt;
+    if (!best || due < *best) best = due;
+  }
+  return best;
 }
 
 void UdpReceiver::enqueue_ack(std::vector<Datagram>& out) {
@@ -351,6 +370,7 @@ AbandonResult UdpReceiver::apply_abandon(std::vector<AbandonRange> ranges,
   // liveness path: if the ACK that followed the first application was lost,
   // the sender's idempotent ABANDON retransmission re-elicits it.
   if (result.applied) {
+    abandon_ranges_ = normalize_abandon_ranges(std::move(abandon_ranges_));
     const bool moved = advance_recv_next(now, out);
     if (!moved) enqueue_ack(out.datagrams);
     result.acks = std::move(out.datagrams);

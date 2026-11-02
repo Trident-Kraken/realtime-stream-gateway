@@ -477,11 +477,17 @@ void TransportSender::teardown(TeardownCause cause, MonoNs now) {
 // ---------------------------------------------------------------------------
 
 TxFrame* TransportSender::find_frame_for_seq(std::uint32_t seq) {
-  for (auto& f : frames_) {
-    if (seq_ge(seq, f.first_seq) &&
-        seq_lt(seq, seq_advance(f.first_seq, f.frame_count))) {
-      return &f;
-    }
+  if (frames_.empty() || seq_lt(seq, frames_.front().first_seq) ||
+      seq_ge(seq, next_seq_)) {
+    return nullptr;
+  }
+  auto it = std::partition_point(
+      frames_.begin(), frames_.end(), [seq](const TxFrame& f) {
+        return seq_le(seq_advance(f.first_seq, f.frame_count), seq);
+      });
+  if (it != frames_.end() && seq_ge(seq, it->first_seq) &&
+      seq_lt(seq, seq_advance(it->first_seq, it->frame_count))) {
+    return &(*it);
   }
   return nullptr;
 }

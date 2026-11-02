@@ -13,6 +13,7 @@
 #include "rudp_rt/types.hpp"
 #include "rudp_rt/wire.hpp"
 
+#include <deque>
 #include <functional>
 #include <map>
 #include <optional>
@@ -92,6 +93,8 @@ class UdpReceiver final : public Receiver {
   bool synced() const { return synced_; }
   std::uint32_t recv_next() const { return recv_next_; }
   std::size_t storage_size() const { return storage_.size(); }
+  std::size_t abandon_range_count() const { return abandon_ranges_.size(); }
+  std::optional<MonoNs> next_nack_deadline() const;
 
   // Tombstones: frames declared dead (conflict or ABANDON) so later packets
   // are dropped without new violations.
@@ -130,7 +133,7 @@ class UdpReceiver final : public Receiver {
   std::map<std::uint32_t, MonoNs> hole_last_nack_;  // per-hole throttle
   std::vector<Datagram> pending_control_;           // NACKs from on_timer
   std::vector<AbandonRange> abandon_ranges_;
-  std::map<std::uint32_t, std::uint8_t> dead_frames_;  // tombstones
+  std::deque<std::uint32_t> dead_frames_;           // wrap-safe FIFO tombstones
   std::uint64_t bytes_owned_ = 0;
   PacketCounters counters_;
 
@@ -193,8 +196,11 @@ class FrameAssembler {
     std::vector<std::vector<std::byte>> fragments;  // per packet index
   };
 
-  static constexpr std::uint32_t kKeyBase = 0;  // relative key = frame_id - base
-  std::uint32_t key_of(std::uint32_t frame_id) const;
+  struct SerialFrameLess {
+    bool operator()(std::uint32_t a, std::uint32_t b) const {
+      return frame_lt(a, b);
+    }
+  };
 
   RxFrame* find_frame(std::uint32_t frame_id);
   CompletedFrame complete_frame(RxFrame& f);
@@ -204,9 +210,7 @@ class FrameAssembler {
   MonoNs anchor_arrival_ = 0;
   std::uint32_t anchor_rtp_ts_ = 0;
   MonoNs playout_delay_ = 0;
-  std::map<std::uint32_t, RxFrame> frames_;  // key = serial offset from base
-  std::uint32_t frame_key_base_ = 0;
-  bool frame_key_base_valid_ = false;
+  std::map<std::uint32_t, RxFrame, SerialFrameLess> frames_;  // serial order
 };
 
 // ---------------------------------------------------------------------------
@@ -248,7 +252,7 @@ class JitterBuffer {
   std::uint32_t anchor_rtp_ts_ = 0;
   MonoNs playout_delay_ = 0;
   std::vector<Entry> pending_;  // kept sorted by serial frame order
-  std::map<std::uint32_t, std::uint8_t> dead_;
+  std::deque<std::uint32_t> dead_;
   std::uint64_t dropped_ = 0;
 };
 

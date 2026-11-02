@@ -31,7 +31,7 @@ static std::size_t serial_rank(std::uint32_t frame_id, std::uint32_t base) {
 std::vector<JitterBuffer::Delivery> JitterBuffer::push(CompletedFrame&& frame,
                                                        MonoNs now) {
   std::vector<Delivery> immediate;
-  if (dead_.count(frame.frame_id) != 0) {
+  if (std::find(dead_.begin(), dead_.end(), frame.frame_id) != dead_.end()) {
     dropped_++;  // dead frame never delivered (INV-08)
     return immediate;
   }
@@ -63,8 +63,10 @@ std::vector<JitterBuffer::Delivery> JitterBuffer::push(CompletedFrame&& frame,
 }
 
 bool JitterBuffer::push_dead(std::uint32_t frame_id) {
-  if (dead_.size() >= 256) dead_.erase(dead_.begin());
-  dead_[frame_id] = 1;
+  if (std::find(dead_.begin(), dead_.end(), frame_id) == dead_.end()) {
+    if (dead_.size() >= 256) dead_.pop_front();
+    dead_.push_back(frame_id);
+  }
   for (auto it = pending_.begin(); it != pending_.end(); ++it) {
     if (it->frame.frame_id == frame_id) {
       pending_.erase(it);
@@ -106,12 +108,14 @@ std::vector<JitterBuffer::Delivery> JitterBuffer::on_timer(MonoNs now) {
     for (const std::size_t i : keep) remaining.push_back(std::move(pending_[i]));
     pending_ = std::move(remaining);
   }
-  // Prune dead tombstones that can no longer matter.
+  // Prune dead tombstones that can no longer matter (wrap-safe via frame_lt).
   if (!pending_.empty() && !dead_.empty()) {
     const std::uint32_t oldest = pending_.front().frame.frame_id;
-    for (auto it = dead_.begin(); it != dead_.end() && frame_lt(it->first, oldest);) {
-      it = dead_.erase(it);
-    }
+    dead_.erase(std::remove_if(dead_.begin(), dead_.end(),
+                               [oldest](std::uint32_t fid) {
+                                 return frame_lt(fid, oldest);
+                               }),
+                dead_.end());
   }
   return deliveries;
 }

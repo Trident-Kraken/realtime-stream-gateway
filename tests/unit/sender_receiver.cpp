@@ -414,4 +414,120 @@ RUDP_TEST(sender_cascade_prunes_broken_gop_pre_admission) {
   RUDP_CHECK_EQ(h.sender->allocated_unacked(), 10u); // only frame 0's 10 packets, not 20
 }
 
+RUDP_TEST(assembler_overflow_preserves_remaining_frames) {
+  FrameAssembler asm4(4);
+  auto make_pkt = [](std::uint32_t fid, std::uint16_t idx,
+                     std::uint16_t count) {
+    AcceptedPacket p;
+    p.frame_id = fid;
+    p.seq = fid * count + idx;
+    p.rtp_timestamp = fid * 3000;
+    p.stream_id = 1;
+    p.frame_index = idx;
+    p.frame_count = count;
+    p.frame_end = (idx + 1 == count);
+    p.media.assign(10, static_cast<std::byte>(fid & 0xFF));
+    return p;
+  };
+
+  // Insert first fragment of frames 0..3 (fills capacity = 4), with 1 arriving
+  // before 0 to also verify out-of-order serial ordering across frames.
+  RUDP_CHECK(asm4.on_packet(make_pkt(1, 0, 2)).expired_frames.empty());
+  RUDP_CHECK(asm4.on_packet(make_pkt(0, 0, 2)).expired_frames.empty());
+  RUDP_CHECK(asm4.on_packet(make_pkt(2, 0, 2)).expired_frames.empty());
+  RUDP_CHECK(asm4.on_packet(make_pkt(3, 0, 2)).expired_frames.empty());
+  RUDP_CHECK_EQ(asm4.tracked_frames(), 4u);
+
+  // Frame 4 arrives: oldest frame in serial order (frame 0) must be evicted,
+  // while frames 1, 2, 3 remain intact and addressable.
+  auto out4 = asm4.on_packet(make_pkt(4, 0, 2));
+  RUDP_CHECK_EQ(out4.expired_frames.size(), 1u);
+  RUDP_CHECK_EQ(out4.expired_frames[0], 0u);
+  RUDP_CHECK_EQ(asm4.tracked_frames(), 4u);
+
+  // Second fragment of frames 1, 2, 3, 4 must each complete its frame cleanly.
+  for (std::uint32_t fid = 1; fid <= 4; ++fid) {
+    RUDP_CHECK_EQ(static_cast<int>(asm4.validate_descriptor(make_pkt(fid, 1, 2))),
+                  static_cast<int>(DataClassification::VALID));
+    auto done = asm4.on_packet(make_pkt(fid, 1, 2));
+    RUDP_CHECK_EQ(done.completed.size(), 1u);
+    RUDP_CHECK_EQ(done.completed[0].frame_id, fid);
+    RUDP_CHECK_EQ(done.completed[0].bytes.size(), 20u);
+  }
+  RUDP_CHECK_EQ(asm4.tracked_frames(), 0u);
+}
+
+RUDP_TEST(receiver_abandon_ranges_pruned_and_nack_deadline) {
+  VirtualClock clock;
+  ReceiverConfig rc;
+  rc.peer = Endpoint{1, 1};
+  rc.stream_id = 1;
+  rc.session_epoch = 7;
+  rc.isn = 1000;
+  rc.window_w = 64;
+  rc.nack_throttle_srtt = ns_from_ms(25);
+  UdpReceiver rx(rc, clock);
+  rx.set_sync(1000, 7);
+
+  auto make_data = [](std::uint32_t seq) {
+    Header h;
+    h.version = 1;
+    h.header_len = 7;
+    h.type = static_cast<std::uint8_t>(PacketType::DATA);
+    h.stream_id = 1;
+    h.seq = seq;
+    h.frame_id = seq - 1000;
+    h.rtp_timestamp = 3000 * (seq - 1000);
+    h.frame_index = 0;
+    h.frame_count = 1;
+    h.flags = kFlagFrameEnd;
+    RtpHeader rtp;
+    rtp.timestamp = h.rtp_timestamp;
+    rtp.marker = true;
+    return *build_data_datagram(Endpoint{1, 1}, h, rtp,
+                                std::vector<std::byte>(32, std::byte{1}));
+  };
+
+  // Arrive seq 1002 out of order -> holes at 1000..1001.
+  rx.on_datagram(make_data(1002), clock.now());
+  RUDP_CHECK(rx.next_nack_deadline().has_value());
+  RUDP_CHECK_EQ(*rx.next_nack_deadline(), ns_from_ms(25));
+
+  // Partial ABANDON for 1001 only: range [1001, 1001] stays until 1000 arrives.
+  rx.apply_abandon({{1001, 1001}}, clock.now());
+  RUDP_CHECK_EQ(rx.recv_next(), 1000u);
+  RUDP_CHECK_EQ(rx.abandon_range_count(), 1u);
+
+  // Now ABANDON 1000: recv_next advances across 1000, 1001 (abandoned), and
+  // 1002 (held) to 1003; consumed abandon ranges and hole state are pruned.
+  rx.apply_abandon({{1000, 1000}}, clock.now());
+  RUDP_CHECK_EQ(rx.recv_next(), 1003u);
+  RUDP_CHECK_EQ(rx.abandon_range_count(), 0u);
+  RUDP_CHECK(!rx.next_nack_deadline().has_value());
+}
+
+RUDP_TEST(receiver_dead_frame_tombstone_wraparound) {
+  VirtualClock clock;
+  ReceiverConfig rc;
+  rc.peer = Endpoint{1, 1};
+  rc.stream_id = 1;
+  rc.session_epoch = 7;
+  rc.isn = 5000;
+  rc.window_w = 64;
+  UdpReceiver rx(rc, clock);
+  rx.set_sync(5000, 7);
+
+  // Mark 255 frames dead before wrap-around [0xFFFFFF01 .. 0xFFFFFFFF],
+  // then wrap to 0 and 1 (total 257 tombstones > cap 256).
+  // FIFO eviction must evict 0xFFFFFF01, NOT numeric minimum 0.
+  for (std::uint32_t i = 0; i < 257; ++i) {
+    const std::uint32_t fid = 0xFFFFFF01u + i;
+    rx.mark_frame_dead(fid);
+  }
+  RUDP_CHECK(!rx.frame_dead(0xFFFFFF01u));
+  RUDP_CHECK(rx.frame_dead(0xFFFFFFFFu));
+  RUDP_CHECK(rx.frame_dead(0u));
+  RUDP_CHECK(rx.frame_dead(1u));
+}
+
 }  // namespace rudp_test
