@@ -1,0 +1,298 @@
+{
+  "schema_version": 1,
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python": "3.12.3",
+  "source_commit": "a4b80a8d884215568b729d272c347672bb82b585",
+  "clock": "real monotonic",
+  "delay_ms": 5,
+  "jitter_ms": 2,
+  "fault_scope": "downstream DATA only; control delayed, not intentionally dropped",
+  "reproducibility": "seeded fault decisions; OS scheduling changes packet order and results",
+  "results": [
+    {
+      "scenario": "no-loss",
+      "seed": 24301,
+      "clients": 1,
+      "duration_ms": 3000,
+      "offered": 90,
+      "ontime": 90,
+      "fdr_playout": 1.0,
+      "session_fdr": 0.988889,
+      "unobserved": 0,
+      "proxy": {
+        "data_attempts": 997,
+        "data_dropped": 0,
+        "retransmissions": 97,
+        "datagram_bytes": 1297144,
+        "queue_overflow": 0,
+        "queue_high_water": 18
+      }
+    },
+    {
+      "scenario": "no-loss",
+      "seed": 24302,
+      "clients": 1,
+      "duration_ms": 3000,
+      "offered": 90,
+      "ontime": 90,
+      "fdr_playout": 1.0,
+      "session_fdr": 0.988889,
+      "unobserved": 0,
+      "proxy": {
+        "data_attempts": 1028,
+        "data_dropped": 0,
+        "retransmissions": 128,
+        "datagram_bytes": 1335192,
+        "queue_overflow": 0,
+        "queue_high_water": 19
+      }
+    },
+    {
+      "scenario": "no-loss",
+      "seed": 24303,
+      "clients": 1,
+      "duration_ms": 3000,
+      "offered": 90,
+      "ontime": 90,
+      "fdr_playout": 1.0,
+      "session_fdr": 0.988889,
+      "unobserved": 0,
+      "proxy": {
+        "data_attempts": 1064,
+        "data_dropped": 0,
+        "retransmissions": 164,
+        "datagram_bytes": 1379644,
+        "queue_overflow": 0,
+        "queue_high_water": 19
+      }
+    },
+    {
+      "scenario": "iid-5",
+      "seed": 24301,
+      "clients": 1,
+      "duration_ms": 3000,
+      "offered": 90,
+      "ontime": 88,
+      "fdr_playout": 0.9777777777777777,
+      "session_fdr": 0.988889,
+      "unobserved": 0,
+      "proxy": {
+        "data_attempts": 1054,
+        "data_dropped": 43,
+        "retransmissions": 154,
+        "datagram_bytes": 1365820,
+        "queue_overflow": 0,
+        "queue_high_water": 18
+      }
+    },
+    {
+      "scenario": "iid-5",
+      "seed": 24302,
+      "clients": 1,
+      "duration_ms": 3000,
+      "offered": 90,
+      "ontime": 87,
+      "fdr_playout": 0.9666666666666667,
+      "session_fdr": 0.988889,
+      "unobserved": 0,
+      "proxy": {
+        "data_attempts": 1140,
+        "data_dropped": 52,
+        "retransmissions": 240,
+        "datagram_bytes": 1474408,
+        "queue_overflow": 0,
+        "queue_high_water": 21
+      }
+    },
+    {
+      "scenario": "iid-5",
+      "seed": 24303,
+      "clients": 1,
+      "duration_ms": 3000,
+      "offered": 90,
+      "ontime": 89,
+      "fdr_playout": 0.9888888888888889,
+      "session_fdr": 0.977778,
+      "unobserved": 0,
+      "proxy": {
+        "data_attempts": 1185,
+        "data_dropped": 62,
+        "retransmissions": 285,
+        "datagram_bytes": 1530224,
+        "queue_overflow": 0,
+        "queue_high_water": 18
+      }
+    },
+    {
+      "scenario": "burst-20-4",
+      "seed": 24301,
+      "clients": 1,
+      "duration_ms": 3000,
+      "offered": 90,
+      "ontime": 74,
+      "fdr_playout": 0.8222222222222222,
+      "session_fdr": 0.944444,
+      "unobserved": 0,
+      "proxy": {
+        "data_attempts": 1340,
+        "data_dropped": 356,
+        "retransmissions": 440,
+        "datagram_bytes": 1721460,
+        "queue_overflow": 0,
+        "queue_high_water": 18
+      }
+    },
+    {
+      "scenario": "burst-20-4",
+      "seed": 24302,
+      "clients": 1,
+      "duration_ms": 3000,
+      "offered": 90,
+      "ontime": 76,
+      "fdr_playout": 0.8444444444444444,
+      "session_fdr": 0.9,
+      "unobserved": 0,
+      "proxy": {
+        "data_attempts": 1250,
+        "data_dropped": 279,
+        "retransmissions": 350,
+        "datagram_bytes": 1610728,
+        "queue_overflow": 0,
+        "queue_high_water": 19
+      }
+    },
+    {
+      "scenario": "burst-20-4",
+      "seed": 24303,
+      "clients": 1,
+      "duration_ms": 3000,
+      "offered": 89,
+      "ontime": 69,
+      "fdr_playout": 0.7752808988764045,
+      "session_fdr": 0.865169,
+      "unobserved": 0,
+      "proxy": {
+        "data_attempts": 1219,
+        "data_dropped": 292,
+        "retransmissions": 329,
+        "datagram_bytes": 1570436,
+        "queue_overflow": 0,
+        "queue_high_water": 19
+      }
+    },
+    {
+      "scenario": "outage-400ms",
+      "seed": 24301,
+      "clients": 1,
+      "duration_ms": 3000,
+      "offered": 90,
+      "ontime": 80,
+      "fdr_playout": 0.8888888888888888,
+      "session_fdr": 0.877778,
+      "unobserved": 9,
+      "proxy": {
+        "data_attempts": 1134,
+        "data_dropped": 210,
+        "retransmissions": 234,
+        "datagram_bytes": 1461272,
+        "queue_overflow": 0,
+        "queue_high_water": 22
+      }
+    },
+    {
+      "scenario": "outage-400ms",
+      "seed": 24302,
+      "clients": 1,
+      "duration_ms": 3000,
+      "offered": 90,
+      "ontime": 80,
+      "fdr_playout": 0.8888888888888888,
+      "session_fdr": 0.877778,
+      "unobserved": 10,
+      "proxy": {
+        "data_attempts": 1068,
+        "data_dropped": 220,
+        "retransmissions": 168,
+        "datagram_bytes": 1378976,
+        "queue_overflow": 0,
+        "queue_high_water": 22
+      }
+    },
+    {
+      "scenario": "outage-400ms",
+      "seed": 24303,
+      "clients": 1,
+      "duration_ms": 3000,
+      "offered": 90,
+      "ontime": 79,
+      "fdr_playout": 0.8777777777777778,
+      "session_fdr": 0.866667,
+      "unobserved": 10,
+      "proxy": {
+        "data_attempts": 1213,
+        "data_dropped": 230,
+        "retransmissions": 313,
+        "datagram_bytes": 1559084,
+        "queue_overflow": 0,
+        "queue_high_water": 32
+      }
+    },
+    {
+      "scenario": "fanout-3",
+      "seed": 24301,
+      "clients": 3,
+      "duration_ms": 3000,
+      "offered": 267,
+      "ontime": 267,
+      "fdr_playout": 1.0,
+      "session_fdr": 1,
+      "unobserved": 0,
+      "proxy": {
+        "data_attempts": 3067,
+        "data_dropped": 0,
+        "retransmissions": 397,
+        "datagram_bytes": 3983784,
+        "queue_overflow": 0,
+        "queue_high_water": 52
+      }
+    },
+    {
+      "scenario": "fanout-3",
+      "seed": 24302,
+      "clients": 3,
+      "duration_ms": 3000,
+      "offered": 267,
+      "ontime": 264,
+      "fdr_playout": 0.9887640449438202,
+      "session_fdr": 1,
+      "unobserved": 0,
+      "proxy": {
+        "data_attempts": 3131,
+        "data_dropped": 0,
+        "retransmissions": 461,
+        "datagram_bytes": 4064200,
+        "queue_overflow": 0,
+        "queue_high_water": 52
+      }
+    },
+    {
+      "scenario": "fanout-3",
+      "seed": 24303,
+      "clients": 3,
+      "duration_ms": 3000,
+      "offered": 270,
+      "ontime": 270,
+      "fdr_playout": 1.0,
+      "session_fdr": 0.988889,
+      "unobserved": 0,
+      "proxy": {
+        "data_attempts": 3069,
+        "data_dropped": 0,
+        "retransmissions": 369,
+        "datagram_bytes": 3986616,
+        "queue_overflow": 0,
+        "queue_high_water": 50
+      }
+    }
+  ]
+}

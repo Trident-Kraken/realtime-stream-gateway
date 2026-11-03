@@ -1,0 +1,6 @@
+== FINAL (clock=real) ==
+source ledger: frames=0 capture_dropped=0 admitted=0 conserved=yes
+aggregate FDR=0 offered=0
+client playout: ontime=89 late=0 expired=0 abandoned=0 playout_dropped=0
+packets: data_sent=0 retrans=0 acks=0 nacks=0 abandons_sent=0 dup=0 malformed=0 violations=0
+watchdog_violations=0 resource_exhausted=0 mem_hwm_bytes=0

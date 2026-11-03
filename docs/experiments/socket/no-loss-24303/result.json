@@ -1,0 +1,19 @@
+{
+  "scenario": "no-loss",
+  "seed": 24303,
+  "clients": 1,
+  "duration_ms": 3000,
+  "offered": 90,
+  "ontime": 90,
+  "fdr_playout": 1.0,
+  "session_fdr": 0.988889,
+  "unobserved": 0,
+  "proxy": {
+    "data_attempts": 1064,
+    "data_dropped": 0,
+    "retransmissions": 164,
+    "datagram_bytes": 1379644,
+    "queue_overflow": 0,
+    "queue_high_water": 19
+  }
+}

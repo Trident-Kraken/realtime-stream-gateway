@@ -1,0 +1,19 @@
+{
+  "scenario": "outage-400ms",
+  "seed": 24302,
+  "clients": 1,
+  "duration_ms": 3000,
+  "offered": 90,
+  "ontime": 80,
+  "fdr_playout": 0.8888888888888888,
+  "session_fdr": 0.877778,
+  "unobserved": 10,
+  "proxy": {
+    "data_attempts": 1068,
+    "data_dropped": 220,
+    "retransmissions": 168,
+    "datagram_bytes": 1378976,
+    "queue_overflow": 0,
+    "queue_high_water": 22
+  }
+}

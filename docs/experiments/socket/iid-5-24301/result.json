@@ -1,0 +1,19 @@
+{
+  "scenario": "iid-5",
+  "seed": 24301,
+  "clients": 1,
+  "duration_ms": 3000,
+  "offered": 90,
+  "ontime": 88,
+  "fdr_playout": 0.9777777777777777,
+  "session_fdr": 0.988889,
+  "unobserved": 0,
+  "proxy": {
+    "data_attempts": 1054,
+    "data_dropped": 43,
+    "retransmissions": 154,
+    "datagram_bytes": 1365820,
+    "queue_overflow": 0,
+    "queue_high_water": 18
+  }
+}

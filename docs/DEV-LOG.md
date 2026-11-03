@@ -220,3 +220,12 @@ Fault scenarios now cap production at the requested frame count, drive capture a
 `tools/summarize_experiments.py`; bilingual README tables match the raw data.
 IID-5% playout FDR is 0.9868 for deadline vs 0.9872 always; burst-20/4 is
 0.8630 vs 0.8628. These seeds do not demonstrate robust deadline-mode superiority.
+
+## Recruitment strengthening — step 3 (2026-11-03)
+
+Added a bounded loopback fault proxy (4096 queued datagrams, 16 peers), independent
+client/gateway processes, timeouts/cleanup, and raw snapshots plus packet events.
+Ran no-loss, IID-5%, burst-20/4, 400 ms outage, and three-client fanout, three seeds
+each. Added two real-socket regression tests for no-loss and outage recovery.
+These are real-clock functional trials, explicitly separate from virtual-clock
+performance results; seed identity does not imply identical OS packet scheduling.

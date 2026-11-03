@@ -1,0 +1,7 @@
+== FINAL (clock=real) ==
+source ledger: frames=91 capture_dropped=0 admitted=91 conserved=yes
+session 1 (gen 2, stream 1, dead, teardown=shutdown): offered=90 ontime=85 late=0 abandoned=5 expired=0 pre_admission=0 in_flight=0 srtt_ms=12.1342
+aggregate FDR=0.944444 offered=90
+client playout: ontime=0 late=0 expired=0 abandoned=0 playout_dropped=0
+packets: data_sent=0 retrans=0 acks=0 nacks=0 abandons_sent=0 dup=0 malformed=0 violations=0
+watchdog_violations=0 resource_exhausted=0 mem_hwm_bytes=36000

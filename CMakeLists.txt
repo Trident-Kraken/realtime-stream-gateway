@@ -105,3 +105,13 @@ if(RUDP_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/tools/compare_benchmarks.py)
   set_tests_properties(benchmark.measurement_contracts PROPERTIES TIMEOUT 120)
 endif()
+
+if(RUDP_BUILD_TESTS)
+  foreach(scenario no-loss outage-400ms)
+    add_test(NAME system.socket_proxy_${scenario}
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/socket_experiment.py
+        --build ${CMAKE_BINARY_DIR} --out ${CMAKE_BINARY_DIR}/socket-${scenario}
+        --scenario ${scenario} --reps 1 --duration 1500)
+    set_tests_properties(system.socket_proxy_${scenario} PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+  endforeach()
+endif()

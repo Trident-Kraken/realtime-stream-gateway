@@ -8,7 +8,7 @@ Each step is validated, documented and pushed separately to `origin/main`.
    deterministic comparison; regression tests.
 2. **Reproduce experiments (complete):** regenerate raw JSON/traces, publish conditions,
    multiple seeds, playout/session distinctions and wire/retransmission overhead.
-3. **Real socket weak-network evidence:** bounded userspace UDP fault proxy,
+3. **Real socket weak-network evidence (complete):** bounded userspace UDP fault proxy,
    separate gateway/client processes, measured results and limitations.
 4. **Visible demonstration:** replayable frame timeline showing loss, abandonment
    and recovery, using actual recorded events.
@@ -34,3 +34,7 @@ ablation is mixed across seeds; the report makes no universal improvement claim.
 Remote validation of step 1: [GitHub Actions run 41608074949](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/runs/41608074949)
 passed both the normal build/test job and the ASan/UBSan/TSan job. TSan executes
 successfully on the GitHub runner; the mapping limitation is local to this host.
+
+Step 3: 15 real-clock trials (five scenarios, three seeds) completed with separate
+processes and a bounded loopback UDP proxy. Both new socket regression tests pass.
+Raw snapshots/packet events and conditions are in `docs/experiments/socket/`.

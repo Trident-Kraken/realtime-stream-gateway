@@ -1,0 +1,19 @@
+{
+  "scenario": "burst-20-4",
+  "seed": 24303,
+  "clients": 1,
+  "duration_ms": 3000,
+  "offered": 89,
+  "ontime": 69,
+  "fdr_playout": 0.7752808988764045,
+  "session_fdr": 0.865169,
+  "unobserved": 0,
+  "proxy": {
+    "data_attempts": 1219,
+    "data_dropped": 292,
+    "retransmissions": 329,
+    "datagram_bytes": 1570436,
+    "queue_overflow": 0,
+    "queue_high_water": 19
+  }
+}

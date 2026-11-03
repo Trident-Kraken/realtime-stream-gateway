@@ -1,0 +1,19 @@
+{
+  "scenario": "fanout-3",
+  "seed": 24302,
+  "clients": 3,
+  "duration_ms": 3000,
+  "offered": 267,
+  "ontime": 264,
+  "fdr_playout": 0.9887640449438202,
+  "session_fdr": 1,
+  "unobserved": 0,
+  "proxy": {
+    "data_attempts": 3131,
+    "data_dropped": 0,
+    "retransmissions": 461,
+    "datagram_bytes": 4064200,
+    "queue_overflow": 0,
+    "queue_high_water": 52
+  }
+}
