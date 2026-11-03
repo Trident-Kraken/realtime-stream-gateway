@@ -76,7 +76,7 @@ target_link_libraries(rudp_rt PUBLIC Threads::Threads)
 # ---------------------------------------------------------------------------
 # Applications
 # ---------------------------------------------------------------------------
-foreach(app rudp_gateway rudp_client rudp_sim rudp_bench)
+foreach(app rudp_gateway rudp_client rudp_sim rudp_bench rudp_demo)
   string(REGEX REPLACE "^rudp_" "" src_name "${app}")
   add_executable(${app} apps/${src_name}_main.cpp)
   target_compile_options(${app} PRIVATE ${RUDP_WARNING_FLAGS})
@@ -114,4 +114,9 @@ if(RUDP_BUILD_TESTS)
         --scenario ${scenario} --reps 1 --duration 1500)
     set_tests_properties(system.socket_proxy_${scenario} PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
   endforeach()
+endif()
+
+if(RUDP_BUILD_TESTS)
+  add_test(NAME integration.controlled_gop_demo
+    COMMAND rudp_demo ${CMAKE_BINARY_DIR}/gop-demo.json)
 endif()

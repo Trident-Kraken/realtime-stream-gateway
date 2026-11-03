@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620">
+<rect width="1200" height="620" fill="#0f172a"/>
+<style>text{font-family:Arial,sans-serif;fill:#e2e8f0} .muted{fill:#94a3b8}</style>
+<text x="32" y="40" font-size="25" >A failed GOP, explicit abandonment, then recovery</text>
+<text x="32" y="68" font-size="14" class="muted">Recorded C++ protocol callbacks | seed 24301 | virtual time | synthetic frames</text>
+<rect x="291.0" y="94" width="258.0" height="418" fill="#7f1d1d" opacity="0.35"/>
+<text x="297.0" y="115" font-size="13" >Downstream blackout</text>
+<path d="M205.0,125 V510" stroke="#334155" stroke-width="1"/>
+<text x="196.0" y="535" font-size="12" class="muted">0</text>
+<path d="M291.0,125 V510" stroke="#334155" stroke-width="1"/>
+<text x="282.0" y="535" font-size="12" class="muted">20</text>
+<path d="M377.0,125 V510" stroke="#334155" stroke-width="1"/>
+<text x="368.0" y="535" font-size="12" class="muted">40</text>
+<path d="M463.0,125 V510" stroke="#334155" stroke-width="1"/>
+<text x="454.0" y="535" font-size="12" class="muted">60</text>
+<path d="M549.0,125 V510" stroke="#334155" stroke-width="1"/>
+<text x="540.0" y="535" font-size="12" class="muted">80</text>
+<path d="M635.0,125 V510" stroke="#334155" stroke-width="1"/>
+<text x="626.0" y="535" font-size="12" class="muted">100</text>
+<path d="M721.0,125 V510" stroke="#334155" stroke-width="1"/>
+<text x="712.0" y="535" font-size="12" class="muted">120</text>
+<path d="M807.0,125 V510" stroke="#334155" stroke-width="1"/>
+<text x="798.0" y="535" font-size="12" class="muted">140</text>
+<path d="M893.0,125 V510" stroke="#334155" stroke-width="1"/>
+<text x="884.0" y="535" font-size="12" class="muted">160</text>
+<path d="M979.0,125 V510" stroke="#334155" stroke-width="1"/>
+<text x="970.0" y="535" font-size="12" class="muted">180</text>
+<path d="M1065.0,125 V510" stroke="#334155" stroke-width="1"/>
+<text x="1056.0" y="535" font-size="12" class="muted">200</text>
+<path d="M1151.0,125 V510" stroke="#334155" stroke-width="1"/>
+<text x="1142.0" y="535" font-size="12" class="muted">220</text>
+<text x="1080" y="556" font-size="12" class="muted">time / ms</text>
+<text x="32" y="160" font-size="16" >0  KEY</text>
+<path d="M291.0,155 H506.0" stroke="#fb7185" stroke-width="3"/>
+<circle cx="291.0" cy="155" r="5" fill="#93c5fd"/>
+<circle cx="506.0" cy="155" r="7" fill="#fb7185"/>
+<text x="518.0" y="160" font-size="13" >abandoned</text>
+<text x="32" y="222" font-size="16" >1  DELTA -&gt; 0</text>
+<path d="M291.0,217 H506.0" stroke="#fb7185" stroke-width="3"/>
+<circle cx="291.0" cy="217" r="5" fill="#93c5fd"/>
+<circle cx="506.0" cy="217" r="7" fill="#fb7185"/>
+<text x="518.0" y="222" font-size="13" >abandoned</text>
+<text x="32" y="284" font-size="16" >2  DELTA -&gt; 0</text>
+<path d="M291.0,279 H506.0" stroke="#fb7185" stroke-width="3"/>
+<circle cx="291.0" cy="279" r="5" fill="#93c5fd"/>
+<circle cx="506.0" cy="279" r="7" fill="#fb7185"/>
+<text x="518.0" y="284" font-size="13" >abandoned</text>
+<text x="32" y="346" font-size="16" >3  DELTA -&gt; 0</text>
+<path d="M549.0,341 H549.0" stroke="#fbbf24" stroke-width="3"/>
+<circle cx="549.0" cy="341" r="5" fill="#93c5fd"/>
+<circle cx="549.0" cy="341" r="7" fill="#fbbf24"/>
+<text x="561.0" y="346" font-size="13" >pruned before admission</text>
+<text x="32" y="408" font-size="16" >4  KEY</text>
+<path d="M549.0,403 H832.8" stroke="#34d399" stroke-width="3"/>
+<circle cx="549.0" cy="403" r="5" fill="#93c5fd"/>
+<circle cx="832.8" cy="403" r="7" fill="#34d399"/>
+<text x="844.8" y="408" font-size="13" >played on time</text>
+<text x="32" y="470" font-size="16" >5  DELTA -&gt; 4</text>
+<path d="M549.0,465 H976.1319" stroke="#34d399" stroke-width="3"/>
+<circle cx="549.0" cy="465" r="5" fill="#93c5fd"/>
+<circle cx="976.1319" cy="465" r="7" fill="#34d399"/>
+<text x="988.1319" y="470" font-size="13" >played on time</text>
+<text x="32" y="582" font-size="14" >Red: deadline/cascade abandon    Amber: broken-GOP pruning    Green: receiver playout</text>
+<text x="32" y="607" font-size="12" class="muted">This demonstrates state transitions; it is not a video decoder or a performance benchmark.</text>
+</svg>

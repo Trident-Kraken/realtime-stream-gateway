@@ -12,9 +12,9 @@ commands = json.loads((build / 'compile_commands.json').read_text())
 missing = [row['file'] for row in commands if flag not in row['command']]
 if not commands or missing:
     raise SystemExit(f'missing instrumentation: {missing}')
-for name in ('rudp_gateway', 'rudp_client', 'rudp_sim', 'rudp_bench'):
+for name in ('rudp_gateway', 'rudp_client', 'rudp_sim', 'rudp_bench', 'rudp_demo'):
     libs = subprocess.check_output(['ldd', str(build / name)], text=True)
     expected = ('libasan', 'libubsan') if mode == 'address' else ('libtsan',)
     if any(lib not in libs for lib in expected):
         raise SystemExit(f'missing sanitizer runtime in {name}')
-print(f'{mode}: {len(commands)} translation units instrumented; 4 applications linked')
+print(f'{mode}: {len(commands)} translation units instrumented; 5 applications linked')

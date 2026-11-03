@@ -197,7 +197,11 @@ class TransportSender final : public Sender {
 
   std::optional<Datagram> emit_new_data(MonoNs now,
                                         std::int64_t byte_budget) override;
-  SenderOutput take_output() override { return std::move(out_); }
+  SenderOutput take_output() override {
+    SenderOutput result = std::move(out_);
+    out_ = SenderOutput{};  // moving vectors does not clear scalar event flags
+    return result;
+  }
   std::optional<MonoNs> next_deadline() const override;
   const PacketCounters& counters() const override { return counters_; }
   const RtoEstimator& rtt() const override { return rtt_; }

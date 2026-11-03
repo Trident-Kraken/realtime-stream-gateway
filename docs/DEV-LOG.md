@@ -229,3 +229,14 @@ Ran no-loss, IID-5%, burst-20/4, 400 ms outage, and three-client fanout, three s
 each. Added two real-socket regression tests for no-loss and outage recovery.
 These are real-clock functional trials, explicitly separate from virtual-clock
 performance results; seed identity does not imply identical OS packet scheduling.
+
+## Recruitment strengthening — step 4 (2026-11-03)
+
+Added `rudp_demo` with controlled loss, actual protocol callbacks, a recorded JSON
+trace and an offline SVG renderer/terminal replay. Demo assertions run in CTest.
+Fixed `TransportSender::take_output`: moving vectors left `keyframe_requested`
+true in subsequent batches; reset the complete output object after draining.
+Extended the existing cascade test to ensure the request fires only once.
+Validation: 79 socket-free tests pass; demo replay is byte-identical; storm replay
+still matches its recorded fault JSON. This is a protocol demonstration, not a
+real codec or RTCP PLI implementation.

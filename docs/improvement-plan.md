@@ -10,7 +10,7 @@ Each step is validated, documented and pushed separately to `origin/main`.
    multiple seeds, playout/session distinctions and wire/retransmission overhead.
 3. **Real socket weak-network evidence (complete):** bounded userspace UDP fault proxy,
    separate gateway/client processes, measured results and limitations.
-4. **Visible demonstration:** replayable frame timeline showing loss, abandonment
+4. **Visible demonstration (complete):** replayable frame timeline showing loss, abandonment
    and recovery, using actual recorded events.
 5. **Presentation:** align bilingual READMEs with evidence and add a resume/interview
    guide with honest scope and remaining limitations.
@@ -38,3 +38,8 @@ successfully on the GitHub runner; the mapping limitation is local to this host.
 Step 3: 15 real-clock trials (five scenarios, three seeds) completed with separate
 processes and a bounded loopback UDP proxy. Both new socket regression tests pass.
 Raw snapshots/packet events and conditions are in `docs/experiments/socket/`.
+
+Step 4: `rudp_demo` records a scripted GOP interruption and verifies abandoned
+0/1/2, pruned 3, on-time 4/5 and a closed independent session ledger. The SVG is
+rendered from JSON callbacks; JSON replay is identical. The demo exposed and fixed
+an uncleared scalar keyframe-request flag in moved SenderOutput batches.

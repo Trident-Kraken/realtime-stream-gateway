@@ -390,6 +390,7 @@ RUDP_TEST(sender_cascade_abandon_on_deadline) {
   RUDP_CHECK_EQ(dec.ab.ranges[0].end, 1029u);
   // Keyframe request should have been triggered
   RUDP_CHECK(out.keyframe_requested);
+  RUDP_CHECK(!h.sender->take_output().keyframe_requested);
 }
 
 RUDP_TEST(sender_cascade_prunes_broken_gop_pre_admission) {
