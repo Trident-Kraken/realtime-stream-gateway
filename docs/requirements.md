@@ -1,6 +1,8 @@
 # RUDP-RT Requirements
 
-**Status**: Draft baseline; implementation blocked by unresolved design decisions.
+**Status**: Historical draft baseline. Its open decisions were subsequently
+resolved by SPECIFICATION.md and ADRs; current measurement semantics are in
+ADR-0021. This document records the initial requirements, not current blockers.
 
 ## Purpose
 

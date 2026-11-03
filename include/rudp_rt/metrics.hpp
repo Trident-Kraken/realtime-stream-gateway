@@ -1,13 +1,15 @@
 #pragma once
 // rudp_rt/metrics.hpp — the two ledgers and immutable snapshots (spec §6,
 // ADR-0005). Frame-level ledgers and packet-level counters are strictly
-// separated (INV-21). Both conservation equations are checked continuously:
+// separated (INV-21). Session conservation is independently checked after each
+// sender output batch; source totals are derived (ADR-0021):
 //
 //   source_frames   = capture_dropped + admitted_to_fanout
 //   session_offered = ontime + late + abandoned + expired
 //                   + pre_admission_dropped + in_flight
 //
-// A failed check is a release blocker and aborts the process (INV-20).
+// A failed session check aborts the process (INV-20); the liveness watchdog
+// separately checks ACK progress.
 
 #include "rudp_rt/types.hpp"
 

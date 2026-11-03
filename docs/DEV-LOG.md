@@ -240,3 +240,12 @@ Extended the existing cascade test to ensure the request fires only once.
 Validation: 79 socket-free tests pass; demo replay is byte-identical; storm replay
 still matches its recorded fault JSON. This is a protocol demonstration, not a
 real codec or RTCP PLI implementation.
+
+## Recruitment strengthening — step 5 (2026-11-03)
+
+Aligned bilingual READMEs, glossary and historical spec precedence with actual
+scope: synthetic frames, source callback (not RTCP PLI), independent session
+accounting (derived source total), toolchain-local replay, modeled TCP and limited
+real-socket trial evidence. Added interview-guide.md with a project narrative,
+qualified resume wording, demonstration sequence, code-backed questions and
+remaining work. Current suite contains 86 cases; CI status is dynamic.

@@ -5,6 +5,11 @@
 **Language/runtime:** Linux, C++20, CMake, POSIX sockets, `epoll`, `timerfd`, `eventfd`, `signalfd`  
 **Authority:** Authoritative specification for protocol behavior, state machine invariants, and deterministic performance benchmarks.
 
+> Measurement update (2026-11-03): ADR-0021 supersedes the original benchmark
+> window, denominator and confidence-interval wording. Current results and unmet
+> claims are documented in experiments/results.md; acceptance targets are not
+> evidence of achieved behavior.
+
 ## 0. Mission
 
 Build, test, and document a deterministic deadline-aware reliable media transport over UDP/RTP. The result must demonstrate that useful media can be delivered on time under loss, delay, jitter, reordering, duplication, overload, reconnect, and shutdown.

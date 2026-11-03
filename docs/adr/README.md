@@ -23,3 +23,5 @@
 | 0019 | Frame dependency awareness, cascade abandon, broken GOP fast pruning | Accepted (Phase 6) |
 | 0020 | Deep-module consolidation — PlayoutPipeline, EventLoop, SimCluster, Session liveness | Accepted (post-Phase-6 review) |
 
+
+- [ADR-0021: Measurement audit, fixed windows and denominators](0021-measurement-audit.md).

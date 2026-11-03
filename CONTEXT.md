@@ -21,14 +21,17 @@ it deliberately.
   scan (ADR-0006); delivery-level death only.
 - **SACK** — bitmap of held packets beyond the cumulative ACK (INV-03
   no-reneging).
-- **Ledger** — conservation-checked accounting structure (INV-20/INV-21):
-  `SessionFrameLedger` and `SourceLedger` in metrics.hpp.
+- **Ledger** — frame accounting structures in metrics.hpp. Session entrance
+  count is independent and conservation-checked; the source runtime total is
+  derived from consumer admissions plus capture drops (ADR-0021).
 - **FDR** — frame delivery ratio; observed at the receiver's playout
   timeline and, separately, in the session ledger (ADR-0005/0012).
 - **GOP (Group of Pictures)** — video sequence boundary comprising an independent KeyFrame and subsequent DeltaFrames (ADR-0019).
 - **KeyFrame / DeltaFrame** — frame dependency types: KeyFrames decode independently; DeltaFrames require their reference KeyFrame (ADR-0019).
 - **Cascade Abandon** — transitive abandonment and pre-admission pruning of dependent DeltaFrames when their reference KeyFrame times out (ADR-0019).
-- **PLI (Picture Loss Indication)** — upstream keyframe request signaled upon cascade abandon to reset the GOP and expedite playback recovery.
+- **Keyframe request** — source-interface callback on cascade abandon. Often
+  called PLI in historical project notes, but no RTCP PLI packet exchange or real
+  encoder integration is currently implemented.
 
 
 ## Sessions and runtime

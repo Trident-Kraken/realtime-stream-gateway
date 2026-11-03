@@ -1,157 +1,93 @@
-# RUDP-RT — 确定性、截止时间感知的低时延可靠流媒体传输网关
+# RUDP-RT：面向实时媒体的截止时间感知 UDP 传输实验系统
 
-
-[English](README.md) | [简体中文](README_zh.md)
+[English](README.md) | 简体中文
 
 [![CI](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/workflows/ci.yml)
-
-
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
-![Platform](https://img.shields.io/badge/platform-Linux-orange.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Linux](https://img.shields.io/badge/platform-Linux-orange.svg)
 
-**RUDP-RT** 是一套专为超低时延实时音视频流媒体研发的高性能 Linux 传输协议栈与网关系统。与传统 TCP“必须完整送达每个字节”的设计哲学不同，本协议针对流媒体的“有效时效性”，**主动用非关键数据的放弃换取关键帧的高概率按时交付（Useful, On-time Delivery）**。
+实时媒体中，完整送达已经过期的帧未必有价值。这个项目研究：**如何在丢包时恢复仍有用的帧，放弃过期帧，并让收发窗口继续推进。**
 
-系统基于现代 C++20 与 Linux 异步 I/O 架构构建，集成了 ACK/SACK/NACK 混合重传、动态 RTT/RTO 估计、滑动窗口流控、帧截止时间（Deadline）感知、**显式 ABANDON 窗口解卡握手**、**GOP 级联放弃与破损帧快速剪枝（Cascade Abandon）**，并通过双账本对账机制保证了端到端流媒体生命周期的**度量守恒律**。
+实现包含 Linux 网关、参考接收端、确定性仿真器、基准工具和 GOP 恢复演示。默认使用合成帧；参考接收端进行分片重组、播放时刻分类与度量，尚未接入真实视频解码和画面显示。
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                   媒体采集与编码层 (Synthetic / V4L2)                   │
-│         - GOP 组织 (KeyFrame / DeltaFrame)  - 关键帧请求 (PLI)          │
-└──────────────────────────────────┬─────────────────────────────────────┘
-                                   │ SPSC 无锁环形队列 (丢最新过载保护)
-┌──────────────────────────────────▼─────────────────────────────────────┐
-│                 Linux 高性能运行时 (Reactor / EventLoop)                │
-│    - 单写者模型 (零锁网络状态机)     - epoll + timerfd + signalfd 统一驱动│
-│    - 非阻塞 UDP + EAGAIN 优雅暂存   - TokenBucket 令牌桶平滑限流         │
-└──────────────────────────────────┬─────────────────────────────────────┘
-                                   │
-┌──────────────────────────────────▼─────────────────────────────────────┐
-│                   传输层核心 (RUDP-RT 协议状态机)                       │
-│ - 28 字节定长二进制协议头          - 序列号安全回绕 (RFC 1982)           │
-│ - ACK / SACK (Bitmap) / NACK 快速 - RFC 6298 RTO (单包采样防膨胀)       │
-│ - 帧剩余时效生命周期管理          - 显式 ABANDON 报文彻底消除队头阻塞   │
-│ - 级联放弃 (Cascade Abandon)      - 破损 GOP 入队快速拦截剪枝           │
-└──────────────────────────────────┬─────────────────────────────────────┘
-                                   │
-┌──────────────────────────────────▼─────────────────────────────────────┐
-│                 接收端管线与播放时间线 (PlayoutPipeline)               │
-│ - 严格防重/分类/过滤流水线       - 帧分片重组器 (FrameAssembler)       │
-│ - RTP 绝对时间线 JitterBuffer     - 双账本对账守恒保证 (Conservation)   │
-└────────────────────────────────────────────────────────────────────────┘
-```
+![协议事件生成的 GOP 恢复时间线](docs/demo/gop-recovery.svg)
 
----
+## 值得研究的设计
 
-## 核心设计与技术亮点
+| 设计 | 实现与验证 |
+|---|---|
+| 截止时间与 ABANDON | 帧到期后释放媒体负载，显式通知接收端消耗序号区间；ABANDON 丢失后重发，测试窗口持续推进 |
+| 有选择的可靠传输 | 滑动窗口、累计 ACK、64 位 SACK、NACK、逐包 RTO 退避；序号回绕与控制报文会话代际校验 |
+| 单写者运行时 | epoll、timerfd、eventfd、signalfd；采集与网络线程通过有界 SPSC 队列交接，处理 EAGAIN 和有界停机 |
+| 帧依赖处理 | 按合成元数据级联放弃依赖帧，拒绝破损 GOP 的新帧，并向媒体源回调关键帧请求 |
+| 可验证的计量 | 会话入口独立计数，与准入、关闭事件对账；按 frame ID 记录唯一终态，固定基准测量分母 |
+| 可复现与实网验证 | 虚拟时钟故障注入、JSON 重放，另有独立进程和真实 UDP socket 的弱网实验 |
 
-### 1. 单写者并发模型（Single-Writer Principle）
-核心网络协议状态机运行在专用的 Reactor 线程中，状态跃迁、定时器调度和报文收发完全无需细粒度互斥锁（Mutex），彻底消除了锁竞争与多线程死锁风险。媒体输入与网络线程间采用有界的单生产者单消费者（SPSC）环形队列解耦，在突发过载时采取确定的丢弃最新帧（Drop-newest）保护策略（[ADR-0001](docs/adr/0001-capture-queue-drop-newest.md)）。
+RTT/RTO 使用 RFC 6298 风格估计及 Karn 过滤，并针对空洞恢复限制采样（ADR-0018），不是完整的 TCP 实现。关键帧请求是源接口回调，未实现 RTCP PLI。默认合成源全部为独立帧；GOP 依赖由专门演示和测试覆盖。
 
-### 2. 截止时间感知与显式 ABANDON 协议握手
-传统基于重传的可靠协议（如 TCP / 传统 ARQ）在弱网丢包时会无限重传历史数据，引发严重的队头阻塞，导致后续可用的新视频帧全部超时卡死（Wedge）。  
-本系统为每个媒体帧赋予截止时间（Deadline）。当帧超时判定为放弃时，发送端释放其媒体数据负载，向接收端发出携带连续序号区间的 `ABANDON` 报文，协同推进接收端的滑动窗口与重组队列，**在保障传输层状态机严谨闭环的同时，彻底打破队头阻塞**。
+## 构建与运行
 
-### 3. GOP 帧依赖感知与级联丢弃（Cascade Abandon, ADR-0019）
-针对流媒体特定的编解码依赖关系（I 帧独立解码，P 帧强依赖 I 帧）：
-- **级联放弃**：当关键帧因丢包超时被 Abandon 时，发送端立即识别其后续未完成的所有差分参考帧，一并执行级联放弃并合并序列号段，杜绝向网络注入“注定无法被解码”的无效废弃数据；
-- **破损 GOP 快速剪枝**：新到达的差分帧若发现其参考帧已被放弃，在入队准入时直接拦截丢弃（`PRE_ADMISSION_DROPPED`），完全不占用发送滑动窗口；
-- **反向关键帧重置（PLI）**：级联放弃时向上层发送关键帧请求信号，通知编码端立即生成全新 I 帧，加速解码画面恢复。
-
-### 4. RFC 6298 RTT 采样防膨胀机制（ADR-0018）
-在丢包恢复阶段，累积确认跨越了多次重传周期。若在此时采样 RTT，算出的时延将包含重传等待时间，导致平滑往返时延（SRTT）和 RTO 虚高膨胀（从 10ms 虚增到 150ms），进而拉长 NACK 抑制窗口并引发雪崩式超时。  
-本系统严格限定**仅在单包前进（未受空洞阻塞）时采样真实链路 RTT**，使传输层时延估算始终贴合真实物理网络。
-
-### 5. 双账本度量守恒律（Conservation Law）
-全系统严格区分“报文级物理计数器”与“帧级生命周期状态”，在运行时建立严密的守恒等式：
-$$\text{Offered} = \text{Ontime} + \text{Late} + \text{Abandoned} + \text{Expired} + \text{Pre-admission} + \text{In-flight}$$
-任何一帧从进入网关到销毁，必须且只能流向一个确定的终态。内置运行时看门狗（Watchdog）对该等式进行连续审计，出现账本不平立即熔断。
-
-### 6. 100% 确定性仿真与比特级重放（Deterministic Simulation）
-将时钟与底层网络抽象为 `IClock` 与 `INetwork` 接口。基于同一随机种子，无论在何种机器架构上运行何种丢包（IID、Gilbert-Elliott 突发）、抖动、乱序组合，均可产生**比特级完全相同（Bit-identical）的测试结果与度量 JSON**，使弱网极端边界 Bug 具备 100% 可复现性。
-
----
-
-## 系统组件
-
-| 可执行目标 | 模块定位 | 核心职责 |
-|---|---|---|
-| `rudp_gateway` | 媒体传输网关 | 非阻塞 UDP、Linux `epoll` 多路复用、单一 `timerfd` 最小堆、SPSC 采集队列、单写者协议驱动 |
-| `rudp_client` | 参考接收端 | ACK/SACK/NACK 生成器、帧分片重组器、静态抖动缓冲区（JitterBuffer）、播放分类与度量上报 |
-| `rudp_sim` | 确定性仿真器 | 进程内虚拟时钟与虚拟网络测试平台，供集成测试与弱网故障矩阵快速驱动 |
-| `rudp_bench` | 基准测试套件 | 提供 UDP、TCP-model、RUDP-RT 的弱网对抗多维对比与时延/FDR 压测 |
-
----
-
-## 快速上手
-
-### 1. 编译构建
+需要 Linux、C++20 编译器、CMake ≥3.24、Python 3（测试及实验脚本）。无第三方 C++ 运行库依赖。
 
 ```bash
-# Release 模式编译（包含调试符号）
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build build -j8
+cmake --build build -j4
+ctest --test-dir build --output-on-failure -j1
 
-# 运行完整自动化测试套件（83 项测试：单元测试、模糊属性测试、集成测试、故障矩阵、系统测试）
-ctest --test-dir build -j1
+# 真实网关/客户端进程，经回环 UDP 代理注入 400 ms DATA 断流
+python3 tools/socket_experiment.py --scenario outage-400ms --reps 1 --out /tmp/rudp-socket
+
+# 可重放的 GOP 事件演示
+./build/rudp_demo /tmp/gop.json
+python3 tools/render_demo.py /tmp/gop.json --svg /tmp/gop.svg --replay
 ```
 
-### 2. 内存与并发安全审计（Sanitizers）
+当前 86 项 CTest 覆盖单元、属性、集成、故障、基准契约及真实 socket 场景。CI 校验实际编译插桩和运行库链接，并执行 ASan/UBSan、TSan；状态以顶部动态 CI 链接为准。
 
 ```bash
-# AddressSanitizer & UndefinedBehaviorSanitizer 内存安全检查
-cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=address -DRUDP_WERROR=OFF
-cmake --build build-asan -j8 && ctest --test-dir build-asan -j1 -E "system\."
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=address \
+  -DRUDP_WERROR=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake --build build-asan -j4
+python3 tools/check_sanitizer.py build-asan address
+ctest --test-dir build-asan --output-on-failure -E '^system\.' -j1
 
-# ThreadSanitizer 并发数据竞争审计
-cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=thread -DRUDP_WERROR=OFF
-cmake --build build-tsan -j8 && ctest --test-dir build-tsan -j1 -R "unit|integration|fault"
+cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=thread \
+  -DRUDP_WERROR=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake --build build-tsan -j4
+python3 tools/check_sanitizer.py build-tsan thread
+ctest --test-dir build-tsan --output-on-failure -R '^(unit|integration|fault)\.' -j1
 ```
 
-### 3. 运行回环演示程序
+## 实验结果与边界
 
-打开终端 1（启动网关）：
-```bash
-./build/rudp_gateway --port 50000 --duration 10000 --metrics-out /tmp/gw.jsonl
-```
+30 fps、12 KB/帧、10 ms 基础 RTT、单向抖动 ±2 ms、100 ms 发送端预算、60 ms 播放等待。
+固定 100 帧预热及 10,000 帧测量区间，五个种子 `24301..24305`。表中为接收端按时播放送达率均值：
 
-打开终端 2（启动客户端接入）：
-```bash
-./build/rudp_client --port 50000 --duration 8000 --metrics-out /tmp/cl.jsonl
-```
-
-运行结束后，两端均会输出不可变的最终对账 JSON 日志，记录所有帧的终态流向、FDR（按时送达率）、时延分位数（p50/p95/p99）及看门狗违例数。
-
----
-
-## 可复现实验（schema v2）
-
-30 fps、12 KB/帧、10 ms 基础 RTT；100 帧预热后固定测量 10,000 帧，5 个种子 `24301..24305`。
-下表为固定分母的接收端按时播放送达率均值，包含整帧丢失与准入丢弃。
-
-| Scenario | UDP | TCP-model | RUDP deadline | RUDP always |
+| 场景 | UDP | TCP-model | RUDP deadline | RUDP always |
 |---|---:|---:|---:|---:|
-| IID 5% | 0.5959 | 0.5139 | 0.9868 | 0.9872 |
-| Burst 20% / 4 | 0.4414 | 0.0000 | 0.8630 | 0.8628 |
+| 5% IID 丢包 | 0.5959 | 0.5139 | 0.9868 | 0.9872 |
+| 20% 突发丢包，长度 4 | 0.4414 | 0.0000 | 0.8630 | 0.8628 |
 
-TCP-model 是用户态有序字节流模型，不代表 Linux TCP 的实际性能。
-Deadline 相对纯重传的收益随种子变化，本组实验不支持“普遍显著提升”的结论。
-P99 的 60 ms 来源于首包到达锚定的播放时间线，不等同于端到端采集或解码延迟。
-完整参数、逐种子数据、半极差、重传开销与复现命令见 [实验报告](docs/experiments/results.md)。
+- TCP-model 是保留按序交付、快速重传和 RTO 的用户态模型，未实现 SACK 或拥塞控制，不能代表 Linux TCP 的实际性能。
+- Deadline 相对纯重传的收益随种子变化，这组数据不支持普遍显著提升的结论。ABANDON 的状态推进及 GOP 恢复另有受控演示验证。
+- 会话 FDR 依据发送端累计 ACK 关闭；播放 FDR 按固定的源帧/客户端分母统计，二者分开报告。
+- 60 ms P99 来自首包到达锚定的播放时间线，包含人为播放等待；不能当作采集到播放或解码延迟。
+- 实网短时实验：无丢包、随机丢包、突发丢包、断流及三客户端共 15 次。它们验证真实运行路径和恢复能力，尚不能证明容量或生产部署表现。
 
----
+完整参数、逐种子结果、半极差、重传开销及复现命令见 [仿真报告](docs/experiments/results.md) 和 [真实 socket 报告](docs/experiments/socket/README.md)。旧版 schema-v1 基准数字已由 schema-v2 取代。
 
-## 文档索引导航
+## 范围与后续工作
 
-- [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md) — 规范级架构设计与工程落地规范书
-- [`docs/protocol.md`](docs/protocol.md) — 线协议 v1 格式、二进制字段定义与状态机跃迁图
-- [`docs/adr/`](docs/adr/) — 20 篇系统级架构决策记录（ADR-0001 ~ ADR-0020）
-- [`docs/DEV-LOG.md`](docs/DEV-LOG.md) — 真实开发里程碑、重大 Bug 攻关复盘（Postmortems）与排错记录
-- [`docs/experiments/`](docs/experiments/) — 故障注入矩阵、弱网基准测试原始数据与重放脚本
-- [`CONTEXT.md`](CONTEXT.md) — 领域核心术语表与统一命名规范
+目前定位为可信实验网络中的传输系统原型。尚未实现拥塞控制、加密认证、NAT 穿透、真实编解码及完整摄像头接入；`camera_source.cpp` 是未接入默认运行路径的实验适配器。仍需长时间运行、多种负载、带宽瓶颈和更多客户端的容量测试。
 
----
+会话入口计数独立于终态统计，路由输出批次后检查守恒；源账本总量仍由消费端准入数和采集丢弃数推导。运行时 Watchdog 检查 ACK 推进停滞。重放在同一构建/工具链内验证，不承诺跨标准库的随机分布结果比特一致。
 
-## 开源协议
+## 阅读入口
 
-本项目采用 [MIT License](LICENSE) 开源许可。
+- [校招项目介绍、简历与面试准备](docs/interview-guide.md)
+- [GOP 演示说明](docs/demo/README.md)
+- [逐项补强与验证记录](docs/improvement-plan.md)
+- [实现规范](docs/SPECIFICATION.md)、[线协议](docs/protocol.md)、[架构决策](docs/adr/)
+- [开发复盘](docs/DEV-LOG.md)、[领域术语](CONTEXT.md)
+
+[MIT License](LICENSE)

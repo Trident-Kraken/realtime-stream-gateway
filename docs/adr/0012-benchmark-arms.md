@@ -1,6 +1,8 @@
 # ADR-0012: Benchmark arms and FDR observation points
 
-- **Status:** Accepted (Phase 0)
+- **Status:** Accepted (Phase 0); measurement details superseded by ADR-0021.
+  The implemented TCP model is deliberately simplified and does not establish
+  Linux TCP performance; current outcomes are in experiments/results.md.
 - **Context:** The required benchmark compares UDP / TCP / RUDP-RT and deadline-aware vs always-retransmit under seeded loss. Real TCP segment loss cannot be injected from userspace on loopback without privileges (a userspace proxy becomes the TCP endpoint, so "dropping" degrades into delay, not loss). Spec §11.3 allows operational choices with unchanged public behavior, documented.
 - **Decision:**
   - All benchmark arms run in-process over the seeded `VirtualNetwork` (identical fault configuration), with results additionally cross-checked on real localhost UDP without loss (system tests).

@@ -12,7 +12,7 @@ Each step is validated, documented and pushed separately to `origin/main`.
    separate gateway/client processes, measured results and limitations.
 4. **Visible demonstration (complete):** replayable frame timeline showing loss, abandonment
    and recovery, using actual recorded events.
-5. **Presentation:** align bilingual READMEs with evidence and add a resume/interview
+5. **Presentation (complete):** align bilingual READMEs with evidence and add a resume/interview
    guide with honest scope and remaining limitations.
 
 Historical schema-v1 benchmark numbers are withdrawn pending step 2. They used
@@ -43,3 +43,19 @@ Step 4: `rudp_demo` records a scripted GOP interruption and verifies abandoned
 0/1/2, pruned 3, on-time 4/5 and a closed independent session ledger. The SVG is
 rendered from JSON callbacks; JSON replay is identical. The demo exposed and fixed
 an uncleared scalar keyframe-request flag in moved SenderOutput batches.
+
+Step 5: rewrote both READMEs around verified scope, current results, commands and
+limitations; added a Chinese recruitment narrative/resume/interview guide; aligned
+glossary and historical-spec precedence. Current suite: 86 tests. Each prior step
+was pushed to origin/main separately: ccb40c5, a4b80a8, e070834, d51abe0.
+
+Final local validation: all 86 tests passed in 27.21 seconds; documentation links,
+`git diff --check`, demo replay and storm replay passed. Remote CI for steps 1–4
+completed successfully, including the sanitizer job:
+
+| Step | Commit | CI |
+|---|---|---|
+| Verification | ccb40c5 | [passed](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/runs/41608074949) |
+| Experiments | a4b80a8 | [passed](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/runs/41608625123) |
+| Real sockets | e070834 | [passed](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/runs/41609499948) |
+| GOP demo | d51abe0 | [passed](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/runs/41610192705) |
