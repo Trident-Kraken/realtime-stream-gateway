@@ -788,7 +788,9 @@ int main(int argc, char** argv) {
       std::cout << "fanout seed=" << std::hex << seed << std::dec
                 << " fdr=" << runs.back().fdr_playout << "\n";
     }
-    json << "  \"workload\": {\"clients\":" << clients << "},\n";
+    json << "  \"workload\": {\"clients\":" << clients
+         << ",\"fps\":30,\"frame_bytes\":12000,\"warmup\":100,\"measured\":"
+         << kMeasuredFrames << "},\n";
     json << "  \"arms\":[\n";
     append_json(json, runs);
     json << "\n  ]\n}\n";

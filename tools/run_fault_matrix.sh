@@ -32,7 +32,7 @@ run "delay"    "$SEED" --frames 1000 --delay 25 --jitter 0
 run "jitter"   "$SEED" --frames 1000 --delay 5  --jitter 3
 run "reorder"  "$SEED" --frames 1000 --reorder 0.10 --down-loss 0.02
 run "duplicate" "$SEED" --frames 1000 --duplicate 0.05 --down-loss 0.02
-run "asymmetric" "$SEED" --frames 1000 --loss 0.10 --down-loss 0.01
+run "asymmetric" "$SEED" --frames 1000 --control-loss 0.10 --down-loss 0.01
 run "control-loss" "$SEED" --frames 1000 --loss 0.02 --control-loss 0.10
 run "storm"    "$SEED" --frames 1000 --down-loss 0.10 --down-burst 4 \
     --jitter 2 --reorder 0.05 --duplicate 0.03 --control-loss 0.03

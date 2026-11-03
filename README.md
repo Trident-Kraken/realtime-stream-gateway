@@ -1,6 +1,5 @@
 # RUDP-RT — Deterministic, Deadline-Aware Reliable Media Transport
 
-> Experiment audit: historical benchmark numbers are withdrawn. See the [strengthening record](docs/improvement-plan.md).
 
 [English](README.md) | [简体中文](README_zh.md)
 
@@ -109,34 +108,23 @@ Both processes output a final immutable JSON metrics snapshot detailing packet c
 
 ---
 
-## Deterministic Simulation & Experiments
+## Reproducible experiments (schema v2)
 
-```bash
-# Run a synthetic fault scenario
-./build/rudp_sim --scenario storm --frames 1000 \
-    --down-loss 0.10 --down-burst 4 --jitter 2 --reorder 0.05 \
-    --json docs/experiments/demo.json
+30 fps, 12 KB/frame, 10 ms base RTT; 100 warmup + 10,000 measured frames,
+five seeds `24301..24305`. Fixed-denominator receiver playout FDR means below
+include wholly lost frames and pre-admission drops.
 
-# Run seeded fault injection matrix & bit-identical determinism replay
-./tools/run_fault_matrix.sh docs/experiments
+| Scenario | UDP | TCP-model | RUDP deadline | RUDP always |
+|---|---:|---:|---:|---:|
+| IID 5% | 0.5959 | 0.5139 | 0.9868 | 0.9872 |
+| Burst 20% / 4 | 0.4414 | 0.0000 | 0.8630 | 0.8628 |
 
-# Run benchmark comparisons across transport protocols
-./tools/run_benchmarks.sh docs/experiments
-```
-
-### Experimental Results (Seeds 0x5EED..0x5EED+4, Fixed Workload)
-
-Workload: 30 fps, 12,000 B/frame (10 packets/frame), 10 ms RTT ±2 ms jitter, 100 ms sender deadline, 60 ms receiver playout delay, 10,000 measured frames. Figures are means over 5 seeded repetitions; the full per-seed runs, traces, and the release-gate table live in [`docs/experiments/`](docs/experiments/).
-
-| Scenario | UDP | TCP-model | RUDP-RT (deadline-aware) | RUDP-RT (always-retransmit) |
-|---|---|---|---|---|
-| **5% IID loss — FDR at receiver playout** | 0.601 ± 0.005 | 0.651 ± 0.037 | **0.973 ± 0.002** | 0.973 ± 0.001 |
-| **20% burst-4 loss — FDR at receiver playout** | 0.446 ± 0.005 | 0.000 (HOLB wedge) | **0.682 ± 0.006** | 0.672 ± 0.019 |
-| **20% burst-4 loss — FDR in session ledger** | — | — | **0.960 ± 0.007** | 0.956 |
-
-The two observation points are deliberately independent (v0.2 D-23): the *session ledger* credits frames delivered within the 100 ms sender deadline; the *playout* view credits frames that also beat the receiver's 60 ms playout instant. Under 20% burst-4 loss the TCP-model wedges completely — ordered byte delivery with a 200 ms RTO floor stalls the window on the first unrecovered hole, so no frame beats playout (0.000). RUDP-RT's playout figure sits below its session figure because RTO backoff (50 ms min, per-entry) cannot always beat the 60 ms playout; what the deadline arm's ABANDON buys is a draining window, so the next clean GOP delivers instead of the stream deadlocking — the session-ledger view (the release gate, ≥ 0.85) stays at 0.960.
-
-*Raw evidence: `docs/experiments/bench-comparison.json` (5% row), `docs/experiments/bench-burst.json` (burst rows), and the gate table in `docs/experiments/results.md`.*
+TCP-model is a userspace ordered-byte-stream model, not Linux TCP performance.
+Deadline-mode gains vary by seed; these runs do not establish a robust general
+advantage over always-retransmit. The 60 ms P99 uses a first-arrival-anchored
+playout timeline, not synchronized capture or decoded-video latency.
+See [full results](docs/experiments/results.md) for per-seed data, half-ranges,
+retransmission cost, limits and reproduction commands.
 
 ---
 

@@ -6,7 +6,7 @@ Each step is validated, documented and pushed separately to `origin/main`.
    fixed frame-id measurement window and independent denominator; unique playout
    terminal events; independent session entrance count; seed parsing; fail-closed
    deterministic comparison; regression tests.
-2. **Reproduce experiments:** regenerate raw JSON/traces, publish conditions,
+2. **Reproduce experiments (complete):** regenerate raw JSON/traces, publish conditions,
    multiple seeds, playout/session distinctions and wire/retransmission overhead.
 3. **Real socket weak-network evidence:** bounded userspace UDP fault proxy,
    separate gateway/client processes, measured results and limitations.
@@ -24,3 +24,13 @@ ASan/UBSan tests pass. Instrumentation/linkage checks pass for ASan/UBSan and
 TSan. The local TSan runtime cannot start (`unexpected memory mapping`), including
 outside the sandbox; this is recorded as an environment limitation, not a pass.
 GitHub CI runs instrumentation checks and sanitizer tests on its own runner.
+
+Step 2: regenerated all benchmark and fault artifacts with seeds 24301..24305
+(faults use 24301), fixed 1000-frame fault production and shutdown closure, and
+confirmed both benchmark determinism and storm replay. The results report is
+generated from raw JSON, including half-ranges and recovery traffic. Deadline
+ablation is mixed across seeds; the report makes no universal improvement claim.
+
+Remote validation of step 1: [GitHub Actions run 41608074949](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/runs/41608074949)
+passed both the normal build/test job and the ASan/UBSan/TSan job. TSan executes
+successfully on the GitHub runner; the mapping limitation is local to this host.

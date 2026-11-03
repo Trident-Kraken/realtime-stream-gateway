@@ -1,6 +1,5 @@
 # RUDP-RT — 确定性、截止时间感知的低时延可靠流媒体传输网关
 
-> 实验审计：旧版基准数字已撤回，修正与重测进度见 [补强记录](docs/improvement-plan.md)。
 
 [English](README.md) | [简体中文](README_zh.md)
 
@@ -125,19 +124,20 @@ cmake --build build-tsan -j8 && ctest --test-dir build-tsan -j1 -R "unit|integra
 
 ---
 
-## 实验对比数据（种子 0x5EED..0x5EED+4，固定 10,000 帧压测）
+## 可复现实验（schema v2）
 
-测试负载：30 fps，12,000 字节/帧（10 包/帧），10ms RTT ±2ms 抖动，100ms 发送端 Deadline，60ms 接收端 JitterBuffer 播放延迟。以下为 5 个种子的均值；完整逐种子数据、trace 与发布门限表见 [`docs/experiments/`](docs/experiments/)。
+30 fps、12 KB/帧、10 ms 基础 RTT；100 帧预热后固定测量 10,000 帧，5 个种子 `24301..24305`。
+下表为固定分母的接收端按时播放送达率均值，包含整帧丢失与准入丢弃。
 
-| 测试场景 | 原生 UDP | TCP 传输模型 | RUDP-RT（时效感知版） | RUDP-RT（无时效纯重传版） |
-|---|---|---|---|---|
-| **5% 随机独立丢包 — 接收端 playout 口径 FDR** | 0.601 ± 0.005 | 0.651 ± 0.037 | **0.973 ± 0.002** | 0.973 ± 0.001 |
-| **20% 突发丢包（Burst-4）— 接收端 playout 口径 FDR** | 0.446 ± 0.005 | 0.000（队头阻塞卡死） | **0.682 ± 0.006** | 0.672 ± 0.019 |
-| **20% 突发丢包（Burst-4）— 会话账本口径 FDR** | — | — | **0.960 ± 0.007** | 0.956 |
+| Scenario | UDP | TCP-model | RUDP deadline | RUDP always |
+|---|---:|---:|---:|---:|
+| IID 5% | 0.5959 | 0.5139 | 0.9868 | 0.9872 |
+| Burst 20% / 4 | 0.4414 | 0.0000 | 0.8630 | 0.8628 |
 
-两个观测口径刻意相互独立（v0.2 D-23）：*会话账本*统计在 100ms 发送端 Deadline 内完成交付的帧；*playout 口径*还要求帧赶得上接收端 60ms 的播放时刻。20% Burst-4 下 TCP 模型彻底卡死——按序字节流 + 200ms RTO 下限使其在第一个未恢复空洞上停摆，没有任何帧赶上播放时刻（0.000）。RUDP-RT 的 playout 数字低于会话账本，是因为 RTO 退避（下限 50ms，逐包）并不总能快过 60ms 的播放等待；时效感知版的 ABANDON 换来的是窗口持续排空，下一个干净 GOP 得以交付而不是整条流死锁——会话账本口径（发布门限 ≥ 0.85）保持在 0.960。
-
-*原始数据：`docs/experiments/bench-comparison.json`（5% 行）、`docs/experiments/bench-burst.json`（突发行）、`docs/experiments/results.md`（门限表）。*
+TCP-model 是用户态有序字节流模型，不代表 Linux TCP 的实际性能。
+Deadline 相对纯重传的收益随种子变化，本组实验不支持“普遍显著提升”的结论。
+P99 的 60 ms 来源于首包到达锚定的播放时间线，不等同于端到端采集或解码延迟。
+完整参数、逐种子数据、半极差、重传开销与复现命令见 [实验报告](docs/experiments/results.md)。
 
 ---
 

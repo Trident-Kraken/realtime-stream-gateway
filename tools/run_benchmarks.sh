@@ -12,7 +12,7 @@ SEED=${SEED:-0x5EED}
 
 "$BIN" --seed "$SEED" --reps 5 --loss 0.05 --out "$OUT/bench-comparison"
 "$BIN" --seed "$SEED" --reps 5 --loss 0.20 --burst 4 --out "$OUT/bench-burst"
-"$BIN" --seed "$SEED" --reps 3 --loss 0.05 --clients 3 --fanout \
+"$BIN" --seed "$SEED" --reps 5 --loss 0.05 --clients 3 --fanout \
   --out "$OUT/bench-fanout"
 
 # Determinism check: identical seeds reproduce identical *simulated* metrics.

@@ -2,17 +2,17 @@
 # reproduce this record bit-for-bit (deterministic virtual clock).
 {
   "scenario": "delay",
-  "seed": 0,
+  "seed": 24301,
   "params": {"loss":0,"burst":0,"down_loss":0,"down_burst":0,"control_loss":0,"delay_ms":25,"down_delay_ms":25,"jitter_ms":0,"reorder":0,"duplicate":0,"clients":1,"frames":1000,"deadline_mode":true},
-  "simulated_ns": 46666666666,
-  "offered_frames": 1401,
-  "session_ledger": {"offered":1394,"ontime":1389,"late":0,"abandoned":2,"expired":0,"pre_admission_dropped":1,"in_flight":2},
-  "fdr_session": 0.996413,
-  "client_playout": {"ontime":1387,"late":0,"expired":0,"abandoned":0,"playout_dropped":0,"measured_delivered":1387},
+  "simulated_ns": 46552000000,
+  "offered_frames": 1000,
+  "session_ledger": {"offered":999,"ontime":999,"late":0,"abandoned":0,"expired":0,"pre_admission_dropped":0,"in_flight":0},
+  "fdr_session": 1,
+  "client_playout": {"ontime":999,"late":0,"expired":0,"abandoned":0,"playout_dropped":0,"measured_delivered":999},
   "fdr_playout": 1,
   "latency_ms": {"p50":60,"p95":60,"p99":60,"max":60},
-  "packets": {"gw_data_sent":13910,"gw_acks_received":27802,"gw_abandons_sent":2,"c_acks_sent":0,"c_abandons_received":2},
-  "net": {"dropped":0,"duplicated":0,"delivered":41718},
-  "queue_depth": {"client_control_hwm":40,"reorder":0,"jitter":3,"gateway_control_hwm":2},
+  "packets": {"gw_data_sent":9990,"gw_acks_received":19980,"gw_abandons_sent":0,"c_acks_sent":0,"c_abandons_received":0},
+  "net": {"dropped":0,"duplicated":0,"delivered":30078},
+  "queue_depth": {"client_control_hwm":20,"reorder":0,"jitter":0,"gateway_control_hwm":0},
   "invariants_ok": true
 }

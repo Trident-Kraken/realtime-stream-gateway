@@ -137,6 +137,8 @@ int main(int argc, char** argv) {
   }
   cluster.set_gateway_route(down);
   cluster.enable_latencies();
+  cluster.feed_limit = frames;
+  cluster.set_heartbeat(ns_from_ms(1));
 
   const MonoNs run_duration =
       duration_ms > 0
@@ -146,6 +148,8 @@ int main(int argc, char** argv) {
                 rudp_rt::kNsPerMs / 30);  // 30 fps window + tail
 
   cluster.run(run_duration);
+  cluster.feed_enabled = false;
+  cluster.shutdown_close();
   const std::uint64_t offered_frames = cluster.fed;
 
   // ------------------------------------------------------------------
