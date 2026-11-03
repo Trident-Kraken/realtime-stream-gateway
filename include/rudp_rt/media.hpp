@@ -7,6 +7,7 @@
 
 #include "rudp_rt/types.hpp"
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -59,7 +60,7 @@ class SyntheticSource final : public IFrameSource {
                                    : kNsPerSec;
   }
 
-  void request_keyframe() override { force_keyframe_ = true; }
+  void request_keyframe() override { force_keyframe_.store(true, std::memory_order_relaxed); }
 
   std::optional<MediaFrame> next(MonoNs now) override {
     const MonoNs capture = params_.start_time + next_frame_ * frame_interval_ns_;
@@ -74,11 +75,10 @@ class SyntheticSource final : public IFrameSource {
     fill_pattern(f.bytes, next_frame_, params_.stream_id);
 
     if (params_.gop_size > 0) {
-      if (force_keyframe_ || (next_frame_ % params_.gop_size == 0)) {
+      if (force_keyframe_.exchange(false, std::memory_order_relaxed) || (next_frame_ % params_.gop_size == 0)) {
         f.frame_type = FrameType::KEY_FRAME;
         f.depends_on_frame = 0;
         last_keyframe_id_ = next_frame_;
-        force_keyframe_ = false;
       } else {
         f.frame_type = FrameType::DELTA_FRAME;
         f.depends_on_frame = last_keyframe_id_;
@@ -107,7 +107,7 @@ class SyntheticSource final : public IFrameSource {
   MonoNs frame_interval_ns_ = 0;
   std::uint32_t next_frame_ = 0;
   std::uint32_t last_keyframe_id_ = 0;
-  bool force_keyframe_ = false;
+  std::atomic<bool> force_keyframe_{false};
 };
 
 // Callback signature used by capture workers to publish frames.

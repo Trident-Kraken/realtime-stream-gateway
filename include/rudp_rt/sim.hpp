@@ -70,6 +70,13 @@ class VirtualNetwork {
 
   // Schedules delivery of one datagram after applying the direction faults.
   void deliver_from(const Endpoint& src, const Datagram& dg) {
+    stats_.wire_bytes += dg.bytes.size();
+    if (dg.bytes.size() >= 4 && dg.bytes[1] == std::byte{1}) {
+      ++stats_.data_datagrams;
+      if ((static_cast<unsigned>(dg.bytes[3]) & kFlagRetransmit) != 0) {
+        ++stats_.retransmitted_datagrams;
+      }
+    }
     if (!drop_next_.empty() && dg.bytes.size() > 1) {
       const auto type = static_cast<PacketType>(dg.bytes[1]);
       auto it = drop_next_.find(type);
@@ -163,6 +170,9 @@ class VirtualNetwork {
   std::size_t in_flight() const { return events_.size(); }
 
   struct Stats {
+    std::uint64_t wire_bytes = 0;
+    std::uint64_t data_datagrams = 0;
+    std::uint64_t retransmitted_datagrams = 0;
     std::uint64_t dropped = 0;
     std::uint64_t duplicated = 0;
     std::uint64_t delivered = 0;
@@ -465,7 +475,9 @@ class SimCluster {
     driver.run(end, [&](SimDriver&) {
       if (feed_enabled) {
         const MonoNs now = clock.now();
-        while (auto f = source.next(now)) {
+        while (feed_limit == 0 || fed < feed_limit) {
+          auto f = source.next(now);
+          if (!f) break;
           ++fed;
           gateway.offer_frame(std::move(*f), now);
         }
@@ -493,6 +505,7 @@ class SimCluster {
   GatewayNode gateway;
   VirtualSocket gw_sock;
   std::vector<ClientHandle> clients;
+  std::uint64_t feed_limit = 0;  // 0 = unlimited; benchmark caps all arms identically
   bool feed_enabled = true;
   std::uint64_t fed = 0;
 };

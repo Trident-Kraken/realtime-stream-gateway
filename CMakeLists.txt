@@ -21,6 +21,25 @@ if(RUDP_WERROR)
   list(APPEND RUDP_WARNING_FLAGS -Werror)
 endif()
 
+# ---------------------------------------------------------------------------
+# Sanitizer variants are produced by passing:
+#   -DRUDP_SANITIZE=address   (ASan + UBSan)
+#   -DRUDP_SANITIZE=thread    (TSan)
+# ---------------------------------------------------------------------------
+set(RUDP_SANITIZE "" CACHE STRING "Sanitizer: address|thread|undefined")
+if(RUDP_SANITIZE STREQUAL "address")
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=address,undefined)
+elseif(RUDP_SANITIZE STREQUAL "undefined")
+  add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=undefined)
+elseif(RUDP_SANITIZE STREQUAL "thread")
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=thread)
+elseif(NOT RUDP_SANITIZE STREQUAL "")
+  message(FATAL_ERROR "Unknown RUDP_SANITIZE: ${RUDP_SANITIZE}")
+endif()
+
 find_package(Threads REQUIRED)
 
 # ---------------------------------------------------------------------------
@@ -77,19 +96,12 @@ if(RUDP_BUILD_TESTS)
   add_subdirectory(tests/system)
 endif()
 
-# ---------------------------------------------------------------------------
-# Sanitizer variants are produced by passing:
-#   -DRUDP_SANITIZE=address   (ASan + UBSan)
-#   -DRUDP_SANITIZE=thread    (TSan)
-# ---------------------------------------------------------------------------
-set(RUDP_SANITIZE "" CACHE STRING "Sanitizer: address|thread|undefined")
-if(RUDP_SANITIZE STREQUAL "address")
-  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)
-  add_link_options(-fsanitize=address,undefined)
-elseif(RUDP_SANITIZE STREQUAL "undefined")
-  add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer -g)
-  add_link_options(-fsanitize=undefined)
-elseif(RUDP_SANITIZE STREQUAL "thread")
-  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
-  add_link_options(-fsanitize=thread)
+
+if(RUDP_BUILD_TESTS)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME benchmark.measurement_contracts
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark/contracts.py
+      $<TARGET_FILE:rudp_bench> $<TARGET_FILE:rudp_sim>
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/compare_benchmarks.py)
+  set_tests_properties(benchmark.measurement_contracts PROPERTIES TIMEOUT 120)
 endif()

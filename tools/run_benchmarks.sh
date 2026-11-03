@@ -4,7 +4,7 @@
 #   - deadline-aware vs always-retransmit (same RTO configuration)
 #   - three-client fan-out
 #   - burst-20%-len-4 row (release target 2)
-set -eu
+set -euo pipefail
 OUT=${1:-docs/experiments}
 BIN=${BIN:-build/rudp_bench}
 mkdir -p "$OUT"
@@ -17,16 +17,8 @@ SEED=${SEED:-0x5EED}
 
 # Determinism check: identical seeds reproduce identical *simulated* metrics.
 # Host-dependent measurement fields (cpu_s, mem_hwm_kb) are excluded.
-strip_host_fields() {
-  sed -E 's/"cpu_s":[0-9.]+//"cpu_s":0/g; s/"mem_hwm_kb":[0-9]+/"mem_hwm_kb":0/g' "$1"
-}
 "$BIN" --seed "$SEED" --reps 1 --loss 0.05 --out "$OUT/bench-det-a" > /dev/null
 "$BIN" --seed "$SEED" --reps 1 --loss 0.05 --out "$OUT/bench-det-b" > /dev/null
-if diff -q <(strip_host_fields "$OUT/bench-det-a.json") \
-           <(strip_host_fields "$OUT/bench-det-b.json") > /dev/null; then
-  echo "bench determinism check: OK"
-else
-  echo "bench determinism check: MISMATCH"; exit 1
-fi
+python3 "$(dirname "$0")/compare_benchmarks.py" "$OUT/bench-det-a.json" "$OUT/bench-det-b.json"
 rm -f "$OUT/bench-det-a.json" "$OUT/bench-det-b.json"
 echo "benchmarks complete: $OUT"

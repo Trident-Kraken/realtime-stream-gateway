@@ -416,6 +416,9 @@ void GatewayNode::handle_ack_or_nack(const Datagram& dg, const Header&,
 void GatewayNode::route_sender_output(Session& s) {
   SenderOutput out = s.sender.take_output();
   for (const auto& adm : out.admissions) {
+    if (frame_observer_) frame_observer_(s.id, adm.frame_id,
+        adm.admitted ? SessionFrameOutcome::IN_FLIGHT
+                     : SessionFrameOutcome::PRE_ADMISSION_DROPPED);
     if (adm.admitted) {
       s.frames.admit();
     } else {
@@ -424,7 +427,9 @@ void GatewayNode::route_sender_output(Session& s) {
   }
   for (const auto& c : out.closures) {
     s.frames.close(c.outcome);
+    if (frame_observer_) frame_observer_(s.id, c.frame_id, c.outcome);
   }
+  if (!s.frames.conserved()) std::abort();
   for (auto& dg : out.control) {
     if (!s.control.push(std::move(dg))) {
       s.packets.control_queue_dropped++;
@@ -456,6 +461,7 @@ void GatewayNode::offer_frame(MediaFrame&& frame, MonoNs now) {
   for (auto& [key, s] : sessions_) {
     (void)key;
     if (s.dead) continue;
+    ++s.frames.offered_count;
     if (&s == last_live) {
       s.sender.on_frame(std::move(frame));
     } else {
@@ -757,6 +763,7 @@ SessionFrameLedger GatewayNode::aggregate_ledger() const {
   SessionFrameLedger agg;
   for (const auto& [key, s] : sessions_) {
     (void)key;
+    agg.offered_count += s.frames.offered_count;
     agg.ontime += s.frames.ontime;
     agg.late += s.frames.late;
     agg.abandoned += s.frames.abandoned;

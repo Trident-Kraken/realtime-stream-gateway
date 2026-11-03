@@ -10,6 +10,17 @@
 
 namespace rudp_rt {
 
+std::uint64_t parse_seed(const std::string& text) {
+  if (text.empty() || text.front() == '-') throw std::invalid_argument("invalid seed");
+  std::size_t used = 0;
+  const bool hex = text.size() > 2 && text[0] == '0' &&
+                   (text[1] == 'x' || text[1] == 'X');
+  const auto value = std::stoull(text, &used, hex ? 16 : 10);
+  if (used != text.size()) throw std::invalid_argument("invalid seed: " + text);
+  return value;
+}
+
+
 MonoNs parse_duration(const std::string& text) {
   // Accepts "Ns", "Nms", "Nus", "Nm", "Nh", or a bare integer (nanoseconds).
   std::size_t i = 0;

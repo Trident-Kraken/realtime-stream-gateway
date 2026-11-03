@@ -16,3 +16,4 @@ integ_multi_client_fanout_conservation
 integ_sustained_loss_no_wedge
 integ_pending_datagram_recovered
 integ_gop_cascade_abandon_under_loss
+integ_playout_terminal_count_is_unique

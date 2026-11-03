@@ -21,6 +21,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <sys/resource.h>
 #include <vector>
@@ -53,6 +54,7 @@ struct BenchResult {
   std::uint64_t late = 0;
   std::uint64_t expired = 0;
   std::uint64_t abandoned = 0;
+  std::uint64_t session_offered = 0;
   std::uint64_t offered = 0;
   std::uint64_t net_dropped = 0;
   double fdr_session = 0;
@@ -60,7 +62,9 @@ struct BenchResult {
   double p50_ms = 0, p95_ms = 0, p99_ms = 0, max_ms = 0;
   double cpu_s = 0;
   long mem_hwm_kb = 0;
-  double wall_s = 0;
+  std::uint64_t wire_bytes = 0;
+  std::uint64_t data_datagrams = 0;
+  std::uint64_t retransmitted_datagrams = 0;
 };
 
 double percentile(std::vector<MonoNs> v, double p) {
@@ -97,8 +101,6 @@ BenchResult run_rudp_arm(const std::string& arm, std::uint64_t seed,
   r.clients = nclients;
 
   const rusage ru0 = now_rusage();
-  const double wall0 = static_cast<double>(clock()) / CLOCKS_PER_SEC;
-  (void)wall0;
 
   Config cfg;
   cfg.deadline_mode = deadline_mode;
@@ -121,43 +123,64 @@ BenchResult run_rudp_arm(const std::string& arm, std::uint64_t seed,
     cluster.add_client(seed + 1000u + static_cast<std::uint64_t>(i));
     cluster.set_client_route(static_cast<std::size_t>(i), up);
   }
+  cluster.feed_limit = kWarmupFrames + kMeasuredFrames;
+  std::map<std::pair<std::uint32_t, std::uint32_t>, SessionFrameOutcome> session_frames;
+  cluster.gateway.set_frame_observer([&](std::uint32_t sid, std::uint32_t fid,
+                                          SessionFrameOutcome outcome) {
+    if (fid >= kWarmupFrames && fid < kWarmupFrames + kMeasuredFrames) {
+      session_frames[{sid, fid}] = outcome;
+    }
+  });
+  std::vector<std::vector<SessionFrameOutcome>> playout(
+      static_cast<std::size_t>(nclients),
+      std::vector<SessionFrameOutcome>(kMeasuredFrames, SessionFrameOutcome::EXPIRED));
+  for (std::size_t i = 0; i < cluster.clients.size(); ++i) {
+    cluster.clients[i].node->set_frame_observer([&, i](std::uint32_t fid,
+                                                     SessionFrameOutcome outcome) {
+      if (fid >= kWarmupFrames && fid < kWarmupFrames + kMeasuredFrames) {
+        playout[i][fid - kWarmupFrames] = outcome;
+      }
+    });
+  }
   cluster.enable_latencies();
   cluster.set_heartbeat(ns_from_ms(1));
 
   const MonoNs sim_duration =
       static_cast<MonoNs>(static_cast<std::uint64_t>(kWarmupFrames +
-                                                     kMeasuredFrames + 400) *
+                                                     kMeasuredFrames + 60) *
                               1000 * kNsPerMs / 30);
   cluster.run_for(sim_duration);
 
   cluster.gateway.begin_shutdown(cluster.clock.now());
   cluster.run_for(ns_from_ms(100));
 
-  // Aggregate client playout measurement over the measured window.
-  for (auto& c : cluster.clients) {
-    r.ontime += c.node->delivered_ontime();
-    r.late += c.node->delivered_late();
-    r.expired += c.node->delivery_expired();
-    r.abandoned += c.node->delivery_abandoned();
+  // Fixed denominator: all measured source frames for every established client,
+  // including frames for which no datagram ever arrived.
+  r.offered = static_cast<std::uint64_t>(kMeasuredFrames) * static_cast<unsigned>(nclients);
+  r.session_offered = session_frames.size();
+  std::uint64_t session_ontime = 0;
+  for (const auto& [key, outcome] : session_frames) {
+    (void)key;
+    if (outcome == SessionFrameOutcome::IN_FLIGHT) throw std::runtime_error("unclosed session frame");
+    if (outcome == SessionFrameOutcome::ONTIME) ++session_ontime;
   }
-  for (const auto& sm : cluster.gateway.collect_sessions()) {
-    r.offered += sm.frames.offered();
+  for (const auto& client : playout) {
+    for (const auto outcome : client) {
+      switch (outcome) {
+        case SessionFrameOutcome::ONTIME: ++r.ontime; break;
+        case SessionFrameOutcome::LATE: ++r.late; break;
+        case SessionFrameOutcome::ABANDONED: ++r.abandoned; break;
+        default: ++r.expired; break;
+      }
+    }
   }
-  std::uint64_t ontime_total = 0;
-  for (const auto& sm : cluster.gateway.collect_sessions()) {
-    ontime_total += sm.frames.ontime;
-  }
-  r.fdr_session =
-      r.offered > 0
-          ? static_cast<double>(ontime_total) / static_cast<double>(r.offered)
-          : 0.0;
-  const std::uint64_t playout_den =
-      r.ontime + r.late + r.expired + r.abandoned;
-  r.fdr_playout = playout_den > 0
-                      ? static_cast<double>(r.ontime) /
-                            static_cast<double>(playout_den)
-                      : 0.0;
+  r.fdr_session = r.session_offered > 0 ? static_cast<double>(session_ontime) /
+      static_cast<double>(r.session_offered) : 0.0;
+  r.fdr_playout = static_cast<double>(r.ontime) / static_cast<double>(r.offered);
   r.net_dropped = cluster.net.stats().dropped;
+  r.wire_bytes = cluster.net.stats().wire_bytes;
+  r.data_datagrams = cluster.net.stats().data_datagrams;
+  r.retransmitted_datagrams = cluster.net.stats().retransmitted_datagrams;
 
   // Latency percentiles for measured frames (frame_id >= warmup), client 0.
   std::vector<MonoNs> latencies;
@@ -165,7 +188,7 @@ BenchResult run_rudp_arm(const std::string& arm, std::uint64_t seed,
   const auto& lat = node0.latencies();
   const auto& ids = node0.delivered_frame_ids();
   for (std::size_t i = 0; i < lat.size(); ++i) {
-    if (ids[i] >= kWarmupFrames) latencies.push_back(lat[i]);
+    if (ids[i] >= kWarmupFrames && ids[i] < kWarmupFrames + kMeasuredFrames) latencies.push_back(lat[i]);
   }
   r.p50_ms = percentile(latencies, 0.50);
   r.p95_ms = percentile(latencies, 0.95);
@@ -175,7 +198,6 @@ BenchResult run_rudp_arm(const std::string& arm, std::uint64_t seed,
   const rusage ru1 = now_rusage();
   r.cpu_s = cpu_seconds(ru1) - cpu_seconds(ru0);
   r.mem_hwm_kb = static_cast<long>(ru1.ru_maxrss);
-  r.wall_s = r.cpu_s;  // single-threaded sim: CPU approximates wall time
   return r;
 }
 
@@ -233,12 +255,15 @@ BenchResult run_udp_arm(std::uint64_t seed, double loss, int burst) {
   SyntheticSource source(sp);
 
   UdpArmReceiver rx;
-  std::uint64_t offered = 0, sent = 0;
+  std::uint64_t offered = 0;
+  std::set<std::uint32_t> completed;
   std::uint32_t next_frame = 0;
   MonoNs next_expiry_check = 0;
 
   // Simple event loop: feed frames, send fragments once, deliver arrivals.
-  while (next_frame < kWarmupFrames + kMeasuredFrames + 200) {
+  const MonoNs end_at = static_cast<MonoNs>(kWarmupFrames + kMeasuredFrames) *
+                            (kNsPerSec / 30) + ns_from_ms(2000);
+  while (clock.now() < end_at) {
     MonoNs t = clock.now() + ns_from_ms(1);
     if (auto d = net.next_event_time()) t = std::min(t, *d);
     if (t <= clock.now()) t = clock.now() + 1;
@@ -253,17 +278,24 @@ BenchResult run_udp_arm(std::uint64_t seed, double loss, int burst) {
         rx.anchor_arrival = t;
         rx.anchor_rtp = hdr.header.rtp_timestamp;
       }
+      if (fid < kWarmupFrames || fid >= kWarmupFrames + kMeasuredFrames ||
+          completed.contains(fid)) continue;
       auto& st = rx.pending[fid];
-      st.first |= 1u << hdr.header.frame_index;
+      const auto bit = 1u << hdr.header.frame_index;
+      if ((st.first & bit) != 0) continue;
+      st.first |= bit;
       ++st.second;
       if (st.second == hdr.header.frame_count) {
         const MonoNs playout = rx.playout(hdr.header.rtp_timestamp);
         if (t <= playout + kNsPerMs) ++rx.ontime; else ++rx.late;
+        completed.insert(fid);
         rx.pending.erase(fid);
       }
     }
 
-    while (auto f = source.next(t)) {
+    while (next_frame < kWarmupFrames + kMeasuredFrames) {
+      auto f = source.next(t);
+      if (!f) break;
       const bool measured = next_frame >= kWarmupFrames;
       auto pf = pz.packetize(std::move(*f), 1, 1200, 10);
       if (measured) ++offered;
@@ -288,7 +320,6 @@ BenchResult run_udp_arm(std::uint64_t seed, double loss, int burst) {
                                             frag.len));
           if (dg) {
             net.deliver_from(gw_ep, *dg);
-            if (measured) ++sent;
           }
         }
       }
@@ -302,6 +333,7 @@ BenchResult run_udp_arm(std::uint64_t seed, double loss, int burst) {
       for (auto& [fid, st] : rx.pending) {
         const std::uint32_t rtp = fid * kRtpIncrement;
         if (rx.playout(rtp) + kNsPerMs <= t) {
+          completed.insert(fid);
           ++rx.expired;
           gone.push_back(fid);
         }
@@ -313,8 +345,11 @@ BenchResult run_udp_arm(std::uint64_t seed, double loss, int burst) {
   r.offered = offered;
   r.ontime = rx.ontime;
   r.late = rx.late;
-  r.expired = rx.expired;
+  r.expired = r.offered - r.ontime - r.late;
   r.net_dropped = net.stats().dropped;
+  r.wire_bytes = net.stats().wire_bytes;
+  r.data_datagrams = net.stats().data_datagrams;
+  r.retransmitted_datagrams = net.stats().retransmitted_datagrams;
   const std::uint64_t den = r.ontime + r.late + r.expired;
   r.fdr_playout =
       den ? static_cast<double>(r.ontime) / static_cast<double>(den) : 0.0;
@@ -388,12 +423,13 @@ struct TcpModelArm {
     }
   }
 
-  std::optional<Datagram> make_seg(std::uint32_t seq, MonoNs, bool) {
+  std::optional<Datagram> make_seg(std::uint32_t seq, MonoNs, bool retransmit) {
     Header h;
     h.version = 1;
     h.header_len = 7;
     h.type = static_cast<std::uint8_t>(PacketType::DATA);
     h.seq = seq;
+    h.flags = retransmit ? kFlagRetransmit : 0;
     h.stream_id = 1;
     RtpHeader rtp;
     return build_data_datagram(dst, h, rtp,
@@ -477,7 +513,7 @@ struct TcpModelArm {
     send_ack_to_sender(now);
     // Frame completion: every frame boundary the drain crossed counts
     // (a large buffered drain can complete several frames at once).
-    const std::uint32_t first_boundary = ((prev_rcv_next + 9) / 10) * 10;
+    const std::uint32_t first_boundary = (prev_rcv_next / 10 + 1) * 10;
     for (std::uint32_t boundary = first_boundary; boundary <= rcv_next;
          boundary += 10) {
       if (boundary == 0) continue;
@@ -545,15 +581,9 @@ BenchResult run_tcp_arm(std::uint64_t seed, double loss, int burst) {
   std::uint32_t produced_segs = 0;
   std::uint64_t offered = 0;
 
-  std::uint64_t tcp_dbg = 0;
-  while (produced_segs < total_segs || tcp.rcv_next < total_segs) {
-    if (++tcp_dbg % 200000 == 0) {
-      std::cerr << "tcp t=" << clock.now() << " rcv_next=" << tcp.rcv_next
-                << " una=" << tcp.send_una << " nxt=" << tcp.send_next
-                << " buffered=" << tcp.buffered.size()
-                << " retx=" << tcp.retransmissions
-                << " rto_ms=" << tcp.rto / 1000000 << "\n";
-    }
+  const MonoNs end_at = static_cast<MonoNs>(kWarmupFrames + kMeasuredFrames) *
+                            (kNsPerSec / 30) + ns_from_ms(2000);
+  while ((produced_segs < total_segs || tcp.rcv_next < total_segs) && clock.now() < end_at) {
     MonoNs t = clock.now() + ns_from_ms(1);
     if (auto d = net.next_event_time()) t = std::min(t, *d);
     if (t <= clock.now()) t = clock.now() + 1;
@@ -593,27 +623,14 @@ BenchResult run_tcp_arm(std::uint64_t seed, double loss, int burst) {
     tcp.on_timer(t);
 
   }
-  // Final accounting: frames whose playout passed without delivery expired
-  // (computed once; no incremental double counting).
-  {
-    const std::uint32_t playout_passed = tcp.anchor_arrival >= 0
-        ? static_cast<std::uint32_t>(std::max<MonoNs>(
-              0, (clock.now() - ns_from_ms(60) - tcp.anchor_arrival) /
-                     static_cast<MonoNs>(kNsPerSec / 30)))
-        : 0;
-    const std::uint64_t expected =
-        static_cast<std::uint64_t>(
-            std::min<std::uint32_t>(playout_passed, kMeasuredFrames));
-    const std::uint64_t counted = tcp.ontime + tcp.late;
-    if (counted < expected) tcp.expired = expected - counted;
-  }
-
   r.offered = offered;
   r.ontime = tcp.ontime;
   r.late = tcp.late;
-  r.expired = tcp.expired;
-  r.abandoned = tcp.retransmissions;
+  r.expired = r.offered - r.ontime - r.late;
   r.net_dropped = net.stats().dropped;
+  r.wire_bytes = net.stats().wire_bytes;
+  r.data_datagrams = net.stats().data_datagrams;
+  r.retransmitted_datagrams = net.stats().retransmitted_datagrams;
   const std::uint64_t den = r.ontime + r.late + r.expired;
   r.fdr_playout =
       den ? static_cast<double>(r.ontime) / static_cast<double>(den) : 0.0;
@@ -648,9 +665,16 @@ void append_json(std::ostringstream& os, const std::vector<BenchResult>& runs) {
   os << "],\"runs\":[";
   for (std::size_t i = 0; i < runs.size(); ++i) {
     const auto& r = runs[i];
+    if (r.ontime + r.late + r.expired + r.abandoned != r.offered) {
+      throw std::runtime_error("benchmark terminal count mismatch");
+    }
     os << "{\"seed\":" << r.seed << ",\"ontime\":" << r.ontime
        << ",\"late\":" << r.late << ",\"expired\":" << r.expired
-       << ",\"abandoned_or_retx\":" << r.abandoned
+       << ",\"abandoned\":" << r.abandoned
+       << ",\"wire_bytes\":" << r.wire_bytes
+       << ",\"data_datagrams\":" << r.data_datagrams
+       << ",\"retransmitted_datagrams\":" << r.retransmitted_datagrams
+       << ",\"session_offered\":" << r.session_offered
        << ",\"offered\":" << r.offered << ",\"net_dropped\":" << r.net_dropped
        << ",\"fdr_session\":" << r.fdr_session
        << ",\"fdr_playout\":" << r.fdr_playout << ",\"p50_ms\":" << r.p50_ms
@@ -667,9 +691,9 @@ void append_json(std::ostringstream& os, const std::vector<BenchResult>& runs) {
     p99s.push_back(r.p99_ms);
   }
   os << "\"fdr_playout_mean\":" << mean(fdrs)
-     << ",\"fdr_playout_ci\":" << half_range(fdrs)
+     << ",\"fdr_playout_half_range\":" << half_range(fdrs)
      << ",\"p99_ms_mean\":" << mean(p99s)
-     << ",\"p99_ms_ci\":" << half_range(p99s) << "}";
+     << ",\"p99_ms_half_range\":" << half_range(p99s) << "}";
 }
 
 }  // namespace
@@ -692,7 +716,7 @@ int main(int argc, char** argv) {
       }
       return argv[++i];
     };
-    if (arg == "--seed") base_seed = std::stoull(next());
+    if (arg == "--seed") base_seed = parse_seed(next());
     else if (arg == "--reps") repetitions = std::stoi(next());
     else if (arg == "--frames") kMeasuredFrames = static_cast<std::uint32_t>(std::stoul(next()));
     else if (arg == "--loss") loss = std::stod(next());
@@ -711,9 +735,15 @@ int main(int argc, char** argv) {
     }
   }
 
+  if (kMeasuredFrames == 0 || kMeasuredFrames > 1000000 || repetitions < 1 ||
+      repetitions > 100 || clients < 1 || clients > 16 || !std::isfinite(loss) ||
+      loss < 0 || loss > 1 || burst < 0 || burst > 10000) {
+    std::cerr << "invalid benchmark parameters\n";
+    return 2;
+  }
   std::vector<std::ostringstream> docs(1);
   std::ostringstream& json = docs[0];
-  json << "{\n";
+  json << "{\n  \"schema_version\":2,\n";
 
   if (!fanout) {
     // Arms 1+2: UDP / TCP-model / RUDP-RT / RUDP-RT-always-retransmit.
@@ -766,6 +796,7 @@ int main(int argc, char** argv) {
 
   const std::string out_path = out_prefix + ".json";
   std::ofstream out(out_path);
+  if (!out) throw std::runtime_error("cannot write " + out_path);
   out << json.str();
   std::cout << "wrote " << out_path << "\n";
   return 0;

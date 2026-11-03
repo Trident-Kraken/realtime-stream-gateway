@@ -54,7 +54,7 @@ std::vector<Datagram> PlayoutPipeline::apply_abandon(
         std::find(result.dead_frames.begin(), result.dead_frames.end(), id) !=
         result.dead_frames.end();
     if (jitter_had || in_assembler || in_receiver) {
-      delivery_abandoned_++;
+      if (close_frame(id, SessionFrameOutcome::ABANDONED)) delivery_abandoned_++;
     }
   }
   return std::move(result.acks);
@@ -64,7 +64,7 @@ std::vector<Datagram> PlayoutPipeline::on_timer(MonoNs now) {
   std::vector<Datagram> control = receiver_.on_timer_and_take(now);
   AssemblerOutput aout = assembler_.on_timer(now);
   for (const std::uint32_t expired_fid : aout.expired_frames) {
-    delivery_expired_++;  // EXPIRED at playout scan (ADR-0006)
+    if (close_frame(expired_fid, SessionFrameOutcome::EXPIRED)) delivery_expired_++;
     // Delivery-level death only: the frame is never delivered, but its
     // packets keep filling sequence holes so the window can drain
     // (spec §4.5/§4.7; the always-retransmit arm never sends ABANDON).
@@ -113,6 +113,7 @@ std::vector<JitterBuffer::Delivery> PlayoutPipeline::take_deliveries() {
 void PlayoutPipeline::process_accepted(std::vector<AcceptedPacket>& accepted,
                                        MonoNs now) {
   for (auto& ap : accepted) {
+    if (terminal(ap.frame_id)) continue;  // transport still consumed the packet
     if (!anchor_set_) {
       // First valid packet with a consistent descriptor anchors the RTP
       // timeline (spec §4.4/§4.7).
@@ -127,7 +128,7 @@ void PlayoutPipeline::process_accepted(std::vector<AcceptedPacket>& accepted,
       receiver_.mark_frame_dead(dead);
     }
     for (const std::uint32_t overflow_fid : aout.expired_frames) {
-      delivery_expired_++;  // frame-table overflow expiry (INV-12)
+      if (close_frame(overflow_fid, SessionFrameOutcome::EXPIRED)) delivery_expired_++;
       jitter_.push_dead(overflow_fid);
     }
     for (auto& cf : aout.completed) {
@@ -138,11 +139,25 @@ void PlayoutPipeline::process_accepted(std::vector<AcceptedPacket>& accepted,
   }
 }
 
+bool PlayoutPipeline::terminal(std::uint32_t id) const {
+  return std::find(terminal_ids_.begin(), terminal_ids_.end(), id) != terminal_ids_.end();
+}
+
+bool PlayoutPipeline::close_frame(std::uint32_t id, SessionFrameOutcome outcome) {
+  if (terminal(id)) return false;
+  if (terminal_ids_.size() >= 512) terminal_ids_.pop_front();
+  terminal_ids_.push_back(id);
+  if (frame_observer_) frame_observer_(id, outcome);
+  return true;
+}
+
 MonoNs PlayoutPipeline::capture_estimate(std::uint32_t rtp_ts) const {
   return rtp_to_mono(anchor_arrival_, anchor_rtp_ts_, rtp_ts);
 }
 
 void PlayoutPipeline::observe_delivery(JitterBuffer::Delivery& d, MonoNs now) {
+  if (!close_frame(d.frame.frame_id, d.ontime ? SessionFrameOutcome::ONTIME
+                                            : SessionFrameOutcome::LATE)) return;
   if (d.ontime) {
     delivered_ontime_++;
   } else {

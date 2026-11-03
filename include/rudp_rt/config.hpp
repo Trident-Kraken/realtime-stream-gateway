@@ -94,6 +94,8 @@ Config load_config_from_string(const std::string& toml, Config base = {});
 Config load_config_file(const std::string& path, Config base = {});
 
 // Duration parser: "100ms", "1s", "500us", "2m", or a bare nanosecond int.
+std::uint64_t parse_seed(const std::string& text);
+
 MonoNs parse_duration(const std::string& text);
 
 }  // namespace rudp_rt

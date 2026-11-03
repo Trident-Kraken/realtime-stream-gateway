@@ -196,3 +196,18 @@ unresolved questions, next action.
      subsequent delivery.
 - **Next:** Complete. Ready for review.
 
+
+## Recruitment strengthening — step 1 (2026-11-03)
+
+- Fixed sanitizer option ordering; verified all 39 translation units have actual
+  instrumentation and all four apps link the expected runtimes. CI now checks it.
+- Fixed TCP frame-boundary double counting, UDP warmup inclusion, RUDP global
+  counters, missing-frame denominator, hexadecimal seeds and broken benchmark
+  determinism filtering. Schema v2 uses a fixed frame window (ADR-0021).
+- Prevented expired/abandoned frames from being counted repeatedly at playout;
+  transport packets still consume holes after delivery expiry.
+- Session offered count is independently recorded before sender admission;
+  conservation is now checked after every routed sender output batch.
+- Keyframe requests crossing the Reactor/capture boundary use an atomic flag.
+- Validation: 83 normal tests passed (78 socket-free + 5 real UDP system tests).
+  Sanitizer results and host limitations are recorded in improvement-plan.md.

@@ -242,6 +242,12 @@ class GatewayNode {
     on_keyframe_request_ = std::move(cb);
   }
 
+  using FrameObserver = std::function<void(std::uint32_t, std::uint32_t,
+                                           SessionFrameOutcome)>;
+  void set_frame_observer(FrameObserver observer) {
+    frame_observer_ = std::move(observer);
+  }
+
   static constexpr std::uint32_t kNoSession = 0xFFFFFFFFu;
 
  private:
@@ -303,6 +309,7 @@ class GatewayNode {
   std::size_t pump_cursor_ = 0;  // round-robin rotation
   std::uint32_t teardown_counter_ = 0;
   std::function<void()> on_keyframe_request_;
+  FrameObserver frame_observer_;
 };
 
 // ---------------------------------------------------------------------------
@@ -351,6 +358,9 @@ class ClientNode {
 
   // Benchmark observation (ADR-0012): per-frame delivery latency from the
   // RTP-derived capture estimate, plus the delivered frame ids.
+  void set_frame_observer(std::function<void(std::uint32_t, SessionFrameOutcome)> observer) {
+    playout_.set_frame_observer(std::move(observer));
+  }
   void record_latencies(bool enable) { playout_.record_latencies(enable); }
   const std::vector<MonoNs>& latencies() const { return playout_.latencies(); }
   const std::vector<std::uint32_t>& delivered_frame_ids() const {

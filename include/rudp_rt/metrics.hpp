@@ -83,6 +83,7 @@ struct PacketCounters {
 // Session-frame ledger for one session (spec §6 equation 2).
 // ---------------------------------------------------------------------------
 struct SessionFrameLedger {
+  std::uint64_t offered_count = 0;  // independently incremented at fan-out entrance
   std::uint64_t ontime = 0;
   std::uint64_t late = 0;
   std::uint64_t abandoned = 0;
@@ -91,9 +92,13 @@ struct SessionFrameLedger {
   std::uint64_t in_flight = 0;
 
   std::uint64_t offered() const {
-    return ontime + late + abandoned + expired + pre_admission_dropped + in_flight;
+    return offered_count;
   }
 
+  bool conserved() const {
+    return offered_count == ontime + late + abandoned + expired +
+                            pre_admission_dropped + in_flight;
+  }
   void admit() { ++in_flight; }
 
   void close(SessionFrameOutcome outcome) {

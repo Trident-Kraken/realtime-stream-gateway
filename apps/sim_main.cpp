@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
       return argv[++i];
     };
     if (arg == "--scenario") scenario = next();
-    else if (arg == "--seed") seed = std::stoull(next());
+    else if (arg == "--seed") seed = parse_seed(next());
     else if (arg == "--loss") loss = std::stod(next());
     else if (arg == "--burst") burst = std::stoi(next());
     else if (arg == "--down-loss") down_loss = std::stod(next());

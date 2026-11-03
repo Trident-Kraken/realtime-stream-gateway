@@ -1,10 +1,12 @@
 # RUDP-RT — 确定性、截止时间感知的低时延可靠流媒体传输网关
 
+> 实验审计：旧版基准数字已撤回，修正与重测进度见 [补强记录](docs/improvement-plan.md)。
+
 [English](README.md) | [简体中文](README_zh.md)
 
 [![CI](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/workflows/ci.yml)
-![Tests](https://img.shields.io/badge/tests-79%2F79%20passed-brightgreen.svg)
-![Sanitizers](https://img.shields.io/badge/sanitizers-ASan%20%7C%20UBSan%20%7C%20TSan-success.svg)
+
+
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
@@ -91,7 +93,7 @@ $$\text{Offered} = \text{Ontime} + \text{Late} + \text{Abandoned} + \text{Expire
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j8
 
-# 运行完整自动化测试套件（79 项测试：单元测试、模糊属性测试、集成测试、故障矩阵、系统测试）
+# 运行完整自动化测试套件（83 项测试：单元测试、模糊属性测试、集成测试、故障矩阵、系统测试）
 ctest --test-dir build -j1
 ```
 

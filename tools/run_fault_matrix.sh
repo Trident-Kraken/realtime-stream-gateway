@@ -4,7 +4,7 @@
 # are built into the binary (exit code 1 = invariant violation).
 #
 # Usage: tools/run_fault_matrix.sh [OUT_DIR]
-set -u
+set -euo pipefail
 OUT=${1:-docs/experiments}
 BIN=${BIN:-build/rudp_sim}
 mkdir -p "$OUT"

@@ -5,6 +5,7 @@
 // and zero watchdog violations.
 
 #include "../sim_fixture.hpp"
+#include <set>
 
 namespace rudp_test {
 
@@ -396,6 +397,23 @@ RUDP_TEST(integ_gop_cascade_abandon_under_loss) {
   RUDP_CHECK(std::find(lp.delivered_ids.begin(), lp.delivered_ids.end(), 3u) != lp.delivered_ids.end());
   RUDP_CHECK(std::find(lp.delivered_ids.begin(), lp.delivered_ids.end(), 4u) != lp.delivered_ids.end());
   RUDP_CHECK(lp.sender.window_empty());
+}
+
+RUDP_TEST(integ_playout_terminal_count_is_unique) {
+  SimSession s(1);
+  s.feed_limit = 300;
+  s.set_faults(0.2, 4, ns_from_ms(2));
+  std::set<std::uint32_t> terminal;
+  s.clients[0].node->set_frame_observer([&](std::uint32_t id, SessionFrameOutcome) {
+    RUDP_CHECK(terminal.insert(id).second);
+  });
+  s.run(ns_from_ms(12000));
+  s.shutdown_close();
+  const auto& c = *s.clients[0].node;
+  RUDP_CHECK_EQ(terminal.size(), c.delivered_ontime() + c.delivered_late() +
+                               c.delivery_expired() + c.delivery_abandoned());
+  RUDP_CHECK_LE(terminal.size(), s.fed);
+  s.assert_invariants();
 }
 
 }  // namespace rudp_test

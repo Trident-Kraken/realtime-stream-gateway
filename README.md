@@ -1,10 +1,12 @@
 # RUDP-RT — Deterministic, Deadline-Aware Reliable Media Transport
 
+> Experiment audit: historical benchmark numbers are withdrawn. See the [strengthening record](docs/improvement-plan.md).
+
 [English](README.md) | [简体中文](README_zh.md)
 
 [![CI](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/workflows/ci.yml)
-![Tests](https://img.shields.io/badge/tests-79%2F79%20passed-brightgreen.svg)
-![Sanitizers](https://img.shields.io/badge/sanitizers-ASan%20%7C%20UBSan%20%7C%20TSan-success.svg)
+
+
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
@@ -75,7 +77,7 @@ It combines Linux `epoll` single-writer event loops with custom RUDP reliability
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j8
 
-# Run test suite (79 tests: unit, property, integration, fault, system)
+# Run test suite (83 tests: unit, property, integration, fault, system)
 ctest --test-dir build -j1
 ```
 

@@ -238,4 +238,26 @@ RUDP_TEST(packetizer_fragmentation) {
   RUDP_CHECK(!too_big.has_value());
 }
 
+RUDP_TEST(session_ledger_independent_entrance) {
+  SessionFrameLedger ledger;
+  ++ledger.offered_count;
+  RUDP_CHECK(!ledger.conserved());  // a lost admission is observable
+  ledger.admit();
+  RUDP_CHECK(ledger.conserved());
+  ledger.close(SessionFrameOutcome::ONTIME);
+  RUDP_CHECK(ledger.conserved());
+  ++ledger.ontime;  // duplicate closure/corrupted terminal count
+  RUDP_CHECK(!ledger.conserved());
+}
+
+RUDP_TEST(seed_decimal_and_hexadecimal) {
+  RUDP_CHECK_EQ(parse_seed("0x5EED"), 24301u);
+  RUDP_CHECK_EQ(parse_seed("24301"), 24301u);
+  RUDP_CHECK_EQ(parse_seed("00010"), 10u);
+  bool rejected = false;
+  try { (void)parse_seed("24301suffix"); }
+  catch (const std::exception&) { rejected = true; }
+  RUDP_CHECK(rejected);
+}
+
 }  // namespace rudp_test

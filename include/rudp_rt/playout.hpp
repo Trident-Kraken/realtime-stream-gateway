@@ -72,6 +72,9 @@ class PlayoutPipeline {
   std::uint64_t delivery_abandoned() const { return delivery_abandoned_; }
   std::uint64_t playout_dropped() const { return jitter_.dropped(); }
   std::uint64_t consumer_dropped() const { return consumer_dropped_; }
+  void set_frame_observer(std::function<void(std::uint32_t, SessionFrameOutcome)> observer) {
+    frame_observer_ = std::move(observer);
+  }
   void record_latencies(bool enable) { record_latencies_ = enable; }
   const std::vector<MonoNs>& latencies() const { return latencies_; }
   const std::vector<std::uint32_t>& delivered_frame_ids() const {
@@ -85,6 +88,10 @@ class PlayoutPipeline {
   std::uint32_t recv_next() const { return receiver_.recv_next(); }
 
  private:
+  bool terminal(std::uint32_t id) const;
+  bool close_frame(std::uint32_t id, SessionFrameOutcome outcome);
+  std::deque<std::uint32_t> terminal_ids_;  // bounded by receive horizon
+  std::function<void(std::uint32_t, SessionFrameOutcome)> frame_observer_;
   void process_accepted(std::vector<AcceptedPacket>& accepted, MonoNs now);
   void observe_delivery(JitterBuffer::Delivery& d, MonoNs now);
   MonoNs capture_estimate(std::uint32_t rtp_ts) const;

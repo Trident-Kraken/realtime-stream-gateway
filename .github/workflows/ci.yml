@@ -16,7 +16,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential ninja-build
+          sudo apt-get install -y cmake build-essential ninja-build python3
 
       - name: Configure CMake
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DRUDP_WERROR=ON
@@ -24,7 +24,7 @@ jobs:
       - name: Build all targets
         run: cmake --build build -j$(nproc)
 
-      - name: Run test suite (79 tests)
+      - name: Run test suite
         run: ctest --test-dir build --output-on-failure -j1
 
       - name: Run fault matrix & determinism replay
@@ -39,16 +39,18 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential ninja-build
+          sudo apt-get install -y cmake build-essential ninja-build python3
 
       - name: Build & Test ASan / UBSan
         run: |
-          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=address -DRUDP_WERROR=OFF
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=address -DRUDP_WERROR=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           cmake --build build-asan -j$(nproc)
+          python3 tools/check_sanitizer.py build-asan address
           ctest --test-dir build-asan --output-on-failure -j1 -E "system\."
 
       - name: Build & Test TSan
         run: |
-          cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=thread -DRUDP_WERROR=OFF
+          cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=thread -DRUDP_WERROR=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           cmake --build build-tsan -j$(nproc)
+          python3 tools/check_sanitizer.py build-tsan thread
           ctest --test-dir build-tsan --output-on-failure -j1 -R "unit|integration|fault"
