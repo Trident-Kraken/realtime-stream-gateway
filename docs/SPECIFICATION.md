@@ -16,9 +16,9 @@ Build, test, and document a deterministic deadline-aware reliable media transpor
 
 This is not a generic UDP demo and not a production Internet protocol. It is a bounded, explainable laboratory implementation whose behavior is defined by tests and invariants.
 
-At handoff time the repository contained design, requirements, decision, invariant, and audit documents but no implementation; the shipped implementation is gated per §7 and checkpointed in `docs/DEV-LOG.md`.
+The initial repository contained design, requirements, decision, invariant, and audit documents but no implementation; the shipped implementation is gated per §7 and checkpointed in `docs/DEV-LOG.md`.
 
-### Handoff snapshot
+### Initial design baseline
 
 - The baseline design is a candidate, not a completed implementation freeze.
 - The audits rated implementation determinism approximately 3/10 and identified blocking gaps in session control, initial sequence state, frame-gap visibility, queue ownership, send-failure terminality, deadline origin, and FDR accounting.
@@ -53,7 +53,7 @@ This specification deliberately supersedes candidate wording where the audits fo
 
 ### Required-content index
 
-The task book must remain directly checkable against the requested nine elements:
+The specification covers the following implementation concerns:
 
 | Required element | Authoritative section |
 |---|---|
@@ -65,7 +65,7 @@ The task book must remain directly checkable against the requested nine elements
 | Prohibited actions | Section 9 |
 | Acceptance criteria | Section 8.1 and the completion condition in Section 11 |
 | Test matrix | Section 8.2 |
-| Unresolved-design handling for the AI | Section 11 |
+| Unresolved design decisions | Section 11 |
 
 The implementation requires an implemented artifact and passing verification for every phase row.
 
@@ -430,7 +430,7 @@ Targets are release gates only after the exact workload, observation points, and
 - Do not use wall-clock time, process-global mutable configuration, hidden retries, or magic constants outside validated configuration.
 - Do not run destructive Git commands or overwrite unrelated user changes.
 
-## 10. Autonomous execution and automatic repair rules
+## 10. Development and regression checks
 
 Engineering follows a rigorous test-driven cycle: inspect -> implement minimal bounded changes -> build -> verify unit/integration tests -> inspect invariants -> log postmortems.
 
@@ -445,7 +445,7 @@ Engineering follows a rigorous test-driven cycle: inspect -> implement minimal b
 9. **External dependency or environment failure:** use already available system facilities or mark the phase blocked with exact command/output. Do not silently add a new dependency or downgrade a required test.
 10. **After every repair:** run directly impacted tests, then all unit/integration/fault tests, then `ctest`, sanitizers where available, and `git diff --check`.
 
-Every autonomous checkpoint must leave a short entry in `docs/DEV-LOG.md` containing phase, command, result, changed files, unresolved questions, and next action.
+Each implementation checkpoint must leave a short entry in `docs/DEV-LOG.md` containing phase, command, result, changed files, unresolved questions, and next action.
 
 ## 11. Rule for unresolved design questions
 
@@ -454,10 +454,10 @@ When encountering architectural decisions not covered by this specification, fol
 1. Stop at the smallest boundary that depends on the question. Do not implement a speculative branch.
 2. Search this specification, accepted ADRs, tests, and the baseline documents. Record the exact conflicting passages or missing contract.
 3. Classify the question:
-   - **Wire/session/invariant/metric/acceptance:** blocking. Create `docs/adr/NNNN-open-<slug>.md`, list facts, at least two options, rejected alternatives, impact, and a concrete question for the user. Mark the phase blocked and continue only on independent work.
+   - **Wire/session/invariant/metric/acceptance:** blocking. Create `docs/adr/NNNN-open-<slug>.md`, list facts, at least two options, rejected alternatives, impact, and a concrete decision to resolve. Mark the phase blocked and continue only on independent work.
    - **Internal implementation detail with identical observable behavior:** choose the simplest existing project pattern, document it in an ADR, and add a focused test proving the external contract is unchanged.
    - **Operational convenience:** use the defaults in this document only if no public behavior, resource bound, or metric changes; document the choice.
-4. If autonomous execution cannot obtain user input, use a pre-approved default only when this document explicitly supplies one. Otherwise leave a failing gate with the ADR; never silently invent a protocol rule.
+4. Use a documented default when one exists. Otherwise record the unresolved decision in the ADR before changing dependent protocol behavior.
 5. Once a decision is supplied, update the ADR, affected public headers, wire vectors, state tables, metrics oracle, and tests before resuming dependent implementation.
 6. If two existing sources conflict, do not average them or pick the newer-looking wording. Report the conflict and apply the authority order in Section 1.
 

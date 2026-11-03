@@ -110,8 +110,8 @@ is tested within one build/toolchain, not guaranteed across C++ standard librari
 
 ## Further reading
 
-- [Recruitment project narrative, resume and interview guide (Chinese)](docs/interview-guide.md)
-- [GOP demo](docs/demo/README.md), [strengthening/validation record](docs/improvement-plan.md)
+- [Design rationale and debugging notes (Chinese)](docs/design-walkthrough.md)
+- [GOP demo](docs/demo/README.md), [validation notes](docs/validation-notes.md)
 - [Implementation specification](docs/SPECIFICATION.md), [wire protocol](docs/protocol.md), [ADRs](docs/adr/)
 - [Engineering postmortems](docs/DEV-LOG.md), [domain glossary](CONTEXT.md)
 

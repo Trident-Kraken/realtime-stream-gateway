@@ -6,3 +6,5 @@ compile_commands.json
 *_metrics.jsonl
 
 __pycache__/
+
+.local-notes/

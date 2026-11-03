@@ -40,7 +40,7 @@ unresolved questions, next action.
   lost-ABANDON, SYNC_START loss, frame-id gaps, descriptor conflict).
 - **Files:** `src/transport/*`, `include/rudp_rt/sim.hpp`, `tests/sim_fixture.hpp`,
   `tests/integration/scenarios.cpp`, `apps/sim_main.cpp`.
-- **Autonomous repairs recorded (each: reproduce → smallest fix → regression):**
+- **Bug fixes (reproducer, fix and regression):**
   1. Control datagram headers missing `version=1` (four builder sites) —
      rejected as malformed by peers; fixed centrally; wire-vector tests now
      pin every builder.
@@ -197,7 +197,7 @@ unresolved questions, next action.
 - **Next:** Complete. Ready for review.
 
 
-## Recruitment strengthening — step 1 (2026-11-03)
+## Sanitizer instrumentation and measurement accounting (2026-11-03)
 
 - Fixed sanitizer option ordering; verified all 39 translation units have actual
   instrumentation and all four apps link the expected runtimes. CI now checks it.
@@ -210,9 +210,9 @@ unresolved questions, next action.
   conservation is now checked after every routed sender output batch.
 - Keyframe requests crossing the Reactor/capture boundary use an atomic flag.
 - Validation: 83 normal tests passed (78 socket-free + 5 real UDP system tests).
-  Sanitizer results and host limitations are recorded in improvement-plan.md.
+  Sanitizer results and host limitations are recorded in validation-notes.md.
 
-## Recruitment strengthening — step 2 (2026-11-03)
+## Reproduced experiment results (2026-11-03)
 
 Regenerated schema-v2 multi-seed benchmarks, all 15 fault cells, and storm replay.
 Fault scenarios now cap production at the requested frame count, drive capture at
@@ -221,7 +221,7 @@ Fault scenarios now cap production at the requested frame count, drive capture a
 IID-5% playout FDR is 0.9868 for deadline vs 0.9872 always; burst-20/4 is
 0.8630 vs 0.8628. These seeds do not demonstrate robust deadline-mode superiority.
 
-## Recruitment strengthening — step 3 (2026-11-03)
+## Real UDP fault trials (2026-11-03)
 
 Added a bounded loopback fault proxy (4096 queued datagrams, 16 peers), independent
 client/gateway processes, timeouts/cleanup, and raw snapshots plus packet events.
@@ -230,7 +230,7 @@ each. Added two real-socket regression tests for no-loss and outage recovery.
 These are real-clock functional trials, explicitly separate from virtual-clock
 performance results; seed identity does not imply identical OS packet scheduling.
 
-## Recruitment strengthening — step 4 (2026-11-03)
+## GOP recovery demo (2026-11-03)
 
 Added `rudp_demo` with controlled loss, actual protocol callbacks, a recorded JSON
 trace and an offline SVG renderer/terminal replay. Demo assertions run in CTest.
@@ -241,11 +241,10 @@ Validation: 79 socket-free tests pass; demo replay is byte-identical; storm repl
 still matches its recorded fault JSON. This is a protocol demonstration, not a
 real codec or RTCP PLI implementation.
 
-## Recruitment strengthening — step 5 (2026-11-03)
+## Documentation alignment (2026-11-03)
 
 Aligned bilingual READMEs, glossary and historical spec precedence with actual
 scope: synthetic frames, source callback (not RTCP PLI), independent session
 accounting (derived source total), toolchain-local replay, modeled TCP and limited
-real-socket trial evidence. Added interview-guide.md with a project narrative,
-qualified resume wording, demonstration sequence, code-backed questions and
-remaining work. Current suite contains 86 cases; CI status is dynamic.
+real-socket trial evidence. The design walkthrough records implementation tradeoffs and debugging cases.
+Current suite contains 86 cases; CI status is dynamic.

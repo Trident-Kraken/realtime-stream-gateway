@@ -84,9 +84,9 @@ ctest --test-dir build-tsan --output-on-failure -R '^(unit|integration|fault)\.'
 
 ## 阅读入口
 
-- [校招项目介绍、简历与面试准备](docs/interview-guide.md)
+- [设计取舍与排错记录](docs/design-walkthrough.md)
 - [GOP 演示说明](docs/demo/README.md)
-- [逐项补强与验证记录](docs/improvement-plan.md)
+- [验证记录](docs/validation-notes.md)
 - [实现规范](docs/SPECIFICATION.md)、[线协议](docs/protocol.md)、[架构决策](docs/adr/)
 - [开发复盘](docs/DEV-LOG.md)、[领域术语](CONTEXT.md)
 
