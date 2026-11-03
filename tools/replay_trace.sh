@@ -17,17 +17,18 @@ if p.get("burst"): args += ["--burst", str(p["burst"])]
 if p.get("down_loss") is not None: args += ["--down-loss", str(p["down_loss"])]
 if p.get("down_burst") is not None: args += ["--down-burst", str(p["down_burst"])]
 if p.get("control_loss"): args += ["--control-loss", str(p["control_loss"])]
+if p.get("delay_ms") is not None: args += ["--delay", str(p["delay_ms"])]
+if p.get("down_delay_ms") is not None: args += ["--down-delay", str(p["down_delay_ms"])]
 if p.get("jitter_ms"): args += ["--jitter", str(p["jitter_ms"])]
 if p.get("reorder"): args += ["--reorder", str(p["reorder"])]
 if p.get("duplicate"): args += ["--duplicate", str(p["duplicate"])]
 if p.get("clients"): args += ["--clients", str(p["clients"])]
+if d.get("scenario"): args += ["--scenario", str(d["scenario"])]
 args += ["--seed", str(d["seed"]), "--frames", str(p.get("frames", 300))]
 print(" ".join(args))
 PY
 )
-BASE=$(dirname "$TRACE")
-NAME=$(basename "$TRACE" .json); NAME=${NAME#fault-}
-"$BIN" --scenario "$NAME" $args --json "$OUT" > /dev/null
+"$BIN" $args --json "$OUT" > /dev/null
 if diff -q "$TRACE" "$OUT" > /dev/null; then
   echo "replay OK: $TRACE reproduced bit-identically"
 else

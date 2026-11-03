@@ -3,7 +3,7 @@
 [English](README.md) | [简体中文](README_zh.md)
 
 [![CI](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/workflows/ci.yml)
-![Tests](https://img.shields.io/badge/tests-74%2F74%20passed-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-79%2F79%20passed-brightgreen.svg)
 ![Sanitizers](https://img.shields.io/badge/sanitizers-ASan%20%7C%20UBSan%20%7C%20TSan-success.svg)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-orange.svg)
@@ -75,7 +75,7 @@ It combines Linux `epoll` single-writer event loops with custom RUDP reliability
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j8
 
-# Run test suite (74 tests: unit, property, integration, fault, system)
+# Run test suite (79 tests: unit, property, integration, fault, system)
 ctest --test-dir build -j1
 ```
 
@@ -142,7 +142,7 @@ The two observation points are deliberately independent (v0.2 D-23): the *sessio
 
 - [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md) — Normative architecture and implementation specification
 - [`docs/protocol.md`](docs/protocol.md) — Wire format v1, packet structures, and state transitions
-- [`docs/adr/`](docs/adr/) — 19 Architecture Decision Records (ADR-0001 to ADR-0019)
+- [`docs/adr/`](docs/adr/) — 20 Architecture Decision Records (ADR-0001 to ADR-0020)
 - [`docs/DEV-LOG.md`](docs/DEV-LOG.md) — Engineering milestones, postmortems, and debugging records
 - [`docs/experiments/`](docs/experiments/) — Fault matrix, benchmark traces, and comparative analysis
 - [`CONTEXT.md`](CONTEXT.md) — Domain glossary and unified terminology

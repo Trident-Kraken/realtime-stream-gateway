@@ -3,7 +3,7 @@
 [English](README.md) | [简体中文](README_zh.md)
 
 [![CI](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Trident-Kraken/realtime-stream-gateway/actions/workflows/ci.yml)
-![Tests](https://img.shields.io/badge/tests-74%2F74%20passed-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-79%2F79%20passed-brightgreen.svg)
 ![Sanitizers](https://img.shields.io/badge/sanitizers-ASan%20%7C%20UBSan%20%7C%20TSan-success.svg)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-orange.svg)
@@ -91,7 +91,7 @@ $$\text{Offered} = \text{Ontime} + \text{Late} + \text{Abandoned} + \text{Expire
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j8
 
-# 运行完整自动化测试套件（74 项测试：单元测试、模糊属性测试、集成测试、故障矩阵、系统测试）
+# 运行完整自动化测试套件（79 项测试：单元测试、模糊属性测试、集成测试、故障矩阵、系统测试）
 ctest --test-dir build -j1
 ```
 
@@ -143,7 +143,7 @@ cmake --build build-tsan -j8 && ctest --test-dir build-tsan -j1 -R "unit|integra
 
 - [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md) — 规范级架构设计与工程落地规范书
 - [`docs/protocol.md`](docs/protocol.md) — 线协议 v1 格式、二进制字段定义与状态机跃迁图
-- [`docs/adr/`](docs/adr/) — 19 篇系统级架构决策记录（ADR-0001 ~ ADR-0019）
+- [`docs/adr/`](docs/adr/) — 20 篇系统级架构决策记录（ADR-0001 ~ ADR-0020）
 - [`docs/DEV-LOG.md`](docs/DEV-LOG.md) — 真实开发里程碑、重大 Bug 攻关复盘（Postmortems）与排错记录
 - [`docs/experiments/`](docs/experiments/) — 故障注入矩阵、弱网基准测试原始数据与重放脚本
 - [`CONTEXT.md`](CONTEXT.md) — 领域核心术语表与统一命名规范

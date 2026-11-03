@@ -24,7 +24,7 @@ jobs:
       - name: Build all targets
         run: cmake --build build -j$(nproc)
 
-      - name: Run test suite (74 tests)
+      - name: Run test suite (79 tests)
         run: ctest --test-dir build --output-on-failure -j1
 
       - name: Run fault matrix & determinism replay
