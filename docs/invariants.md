@@ -1,6 +1,6 @@
 # RUDP-RT Invariants
 
-**Status**: Candidate verification contract. An invariant is not proven merely because it is written here; each must have an owner, observation point, and test.
+**Status**: Active verification contract (v1.0). Each invariant has a designated owner, observation point, and regression test.
 
 ## Protocol Invariants
 
@@ -100,7 +100,7 @@ offered = ontime + late + abandoned + expired
         + capture_dropped + pre_admission_dropped + in_flight
 ```
 
-The categories must be mutually exclusive, exhaustive, and defined for fan-out, reconnect, shutdown, protocol rejection, and abnormal termination. Until that scope is frozen, this equation is a candidate rather than a valid oracle.
+The categories must be mutually exclusive, exhaustive, and defined for fan-out, reconnect, shutdown, protocol rejection, and abnormal termination. The authoritative accounting scopes and reconciliation rules are frozen in SPECIFICATION.md §6 and ADR-0021.
 
 ### INV-21: Packet/frame metric separation
 

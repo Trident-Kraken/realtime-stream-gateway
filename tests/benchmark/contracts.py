@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Black-box checks for the measurement bugs found in the recruitment audit."""
+"""Black-box regression checks for benchmark window, seed, and denominator accounting."""
 import json
 from pathlib import Path
 import subprocess

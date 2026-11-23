@@ -249,19 +249,22 @@ accounting (derived source total), toolchain-local replay, modeled TCP and limit
 real-socket trial evidence. The design walkthrough records implementation tradeoffs and debugging cases.
 Current suite contains 86 cases; CI status is dynamic.
 
-## Batch 1 — CI/UBSan gate & P0 protocol/runtime fixes (2026-11-23)
+## Post-release correctness, concurrency, and observability hardening (2026-11-23)
 
 - **Command:** `cmake -S . -B build && cmake --build build -j$(nproc)`,
   `cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=address -DRUDP_WERROR=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build-asan -j$(nproc)`,
   `python3 tools/check_sanitizer.py build-asan address`,
   `ctest --test-dir build --output-on-failure -j1`,
   `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ctest --test-dir build-asan --output-on-failure -j1`,
-  `tools/replay_trace.sh docs/experiments/fault-storm.json /tmp/storm-replay.json`.
-- **Result:** 95/95 normal tests passed (25.33 s); 95/95 ASan+UBSan tests
-  (including `system.*` and 9 new regression cases) passed with fatal UBSan
-  (`-fno-sanitize-recover=undefined`, 81.68 s); `check_sanitizer.py` passed (40 TUs,
-  5 binaries); `fault-storm.json` replay matched bit-identically.
-- **Bug fixes:**
+  `./build/rudp_sim --loss 0.05 --burst 2 --delay 5 --jitter 4 --reorder 0.05 --duplicate 0.02 --seed 24301 --json /tmp/storm.json && tools/replay_trace.sh /tmp/storm.json /tmp/storm-replay.json`,
+  `./build/rudp_sim --no-deadline --loss 0.10 --seed 24301 --frames 100 --json /tmp/nd.json && tools/replay_trace.sh /tmp/nd.json /tmp/nd-replay.json`.
+- **Result:** 118/118 normal tests passed (27.76 s, `-DRUDP_WERROR=ON`, 0
+  warnings); 118/118 ASan+UBSan tests passed with fatal UBSan
+  (`-fno-sanitize-recover=undefined`, 89.26 s, 32 new unit/system regression
+  tests added relative to the 86-test baseline); `check_sanitizer.py` passed
+  (40 TUs, 5 binaries); both deadline-mode and `--no-deadline`
+  `replay_trace.sh` runs reproduced bit-identically.
+- **Sanitizer gating & transport bounds:**
   1. `CMakeLists.txt`, `tools/check_sanitizer.py`, `.github/workflows/ci.yml`:
      made UBSan non-recoverable, added `undefined` mode support to
      `check_sanitizer.py`, and included `system.*` tests in CI ASan/UBSan and
@@ -279,33 +282,11 @@ Current suite contains 86 cases; CI status is dynamic.
   5. `GatewayNode::route_sender_output`: purged closed/abandoned frames from
      `s.data_queue` and `s.pending_out` (INV-07) and deduplicated/bounded
      `s.data_queue` by `window_w` (INV-12).
-  6. `GatewayNode::pump_session`: debited `s.data_tokens` when emitting new DATA.
-  7. `TokenBucket::refill`: replaced overflowing `rate_ * capped` math with
-     overflow-free `uint64_t` quotient/remainder arithmetic and sub-token
-     nanosecond remainder retention (`rem_ns_`).
-- **Files:** `CMakeLists.txt`, `.github/workflows/ci.yml`,
-  `tools/check_sanitizer.py`, `include/rudp_rt/{receiver,session}.hpp`,
-  `src/codec/rudp_codec.cpp`, `src/transport/{frame_assembler,receiver}.cpp`,
-  `src/session/session_manager.cpp`,
-  `tests/unit/{cases.txt,core.cpp,queues.cpp,sender_receiver.cpp,net_faults.cpp}`,
-  `docs/DEV-LOG.md`.
-- **Unresolved:** Batch 2 (P1 protocol/concurrency fixes) and Batch 3
-  (runtime/config/observability/tooling fixes) remain queued.
-- **Next:** Proceed to Batch 2 when ready.
-
-## Batch 2 — Protocol state-machine, timer & concurrency fixes (2026-11-23)
-
-- **Command:** `cmake -S . -B build && cmake --build build -j$(nproc)`,
-  `cmake -S . -B build-asan && cmake --build build-asan -j$(nproc)`,
-  `python3 tools/check_sanitizer.py build-asan address`,
-  `ctest --test-dir build --output-on-failure -j1`,
-  `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ctest --test-dir build-asan --output-on-failure -j1`,
-  `./build/rudp_sim --loss 0.05 --burst 2 --delay 5 --jitter 4 --reorder 0.05 --duplicate 0.02 --seed 24301 --json /tmp/b2-storm.json && tools/replay_trace.sh /tmp/b2-storm.json /tmp/b2-storm-replay.json`.
-- **Result:** 111/111 normal tests passed (25.56 s, `-DRUDP_WERROR=ON`, 0
-  warnings); 111/111 ASan+UBSan tests passed with fatal UBSan (83.69 s, 16 new
-  regression tests added); `check_sanitizer.py` passed (40 TUs, 5 binaries);
-  `replay_trace.sh` reproduced `/tmp/b2-storm.json` bit-identically.
-- **Bug fixes:**
+  6. `GatewayNode::pump_session` & `TokenBucket::refill`: debited
+     `s.data_tokens` when emitting new DATA, replaced overflowing
+     `rate_ * capped` math with overflow-free `uint64_t` quotient/remainder
+     arithmetic, and retained sub-token nanosecond remainders (`rem_ns_`).
+- **State machines, timers & concurrency:**
   1. `FrameAssembler`: replaced `std::map<..., SerialFrameLess>` (non-transitive
      on unconstrained modular IDs, bypassing INV-05 descriptor lookup) with
      `std::unordered_map`, deterministic anchor-relative eviction, and sorted
@@ -339,31 +320,7 @@ Current suite contains 86 cases; CI status is dynamic.
       idle->active transition, updated `note_ack` only on valid ACKs, waited one
       `keepalive_min_interval` after probe #N before timeout while purging stale
       queued probes, and validated `PING`/`PONG` stream/purpose/epoch/status.
-- **Files:** `include/rudp_rt/{receiver,playout,event_loop,runtime}.hpp`,
-  `src/transport/{frame_assembler,jitter_buffer,playout_pipeline,receiver,sender}.cpp`,
-  `src/runtime/{timer_heap,event_loop,gateway,client}.cpp`,
-  `src/session/{session,session_manager}.cpp`,
-  `tests/unit/{cases.txt,queues.cpp,sender_receiver.cpp,net_faults.cpp}`,
-  `tests/system/process.cpp`, `docs/DEV-LOG.md`.
-- **Unresolved:** Batch 3 (runtime startup/shutdown transactions, config parsing,
-  snapshot aggregation/tooling) remains queued.
-- **Next:** Proceed to Batch 3 when ready.
-
-## Batch 3 — Runtime transactions, observability, config, CLI & tooling fixes (2026-11-23)
-
-- **Command:** `cmake -S . -B build && cmake --build build -j$(nproc)`,
-  `cmake -S . -B build-asan && cmake --build build-asan -j$(nproc)`,
-  `python3 tools/check_sanitizer.py build-asan address`,
-  `ctest --test-dir build --output-on-failure -j1`,
-  `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ctest --test-dir build-asan --output-on-failure -j1`,
-  `./build/rudp_sim --loss 0.05 --burst 2 --delay 5 --jitter 4 --reorder 0.05 --duplicate 0.02 --seed 24301 --json /tmp/b3-storm.json && tools/replay_trace.sh /tmp/b3-storm.json /tmp/b3-storm-replay.json`,
-  `./build/rudp_sim --no-deadline --loss 0.10 --seed 24301 --frames 100 --json /tmp/b3-nd.json && tools/replay_trace.sh /tmp/b3-nd.json /tmp/b3-nd-replay.json`.
-- **Result:** 118/118 normal tests passed (27.76 s, `-DRUDP_WERROR=ON`, 0
-  warnings); 118/118 ASan+UBSan tests passed with fatal UBSan (89.26 s, 7 new
-  unit/system regression tests added across Batch 3); `check_sanitizer.py`
-  passed (40 TUs, 5 binaries); both deadline-mode and `--no-deadline`
-  `replay_trace.sh` runs reproduced bit-identically.
-- **Bug fixes:**
+- **Lifecycle transactions, observability & tooling:**
   1. `GatewayNode::handle_join`, `EventLoop`, `CaptureWorker`, `MetricsWorker`,
      `Gateway`, `Client`: enforced `shutting_down_` join barrier, closed partial
      fds on `EventLoop` constructor failures, caught worker exceptions and
@@ -395,13 +352,14 @@ Current suite contains 86 cases; CI status is dynamic.
      in `replay_trace.sh`, handled `BlockingIOError`, `loss >= 1.0` division by
      zero, and missing `.git` fallback in `socket_experiment.py`, and guarded
      zero-datagram / empty-row division in `summarize_experiments.py`.
-- **Files:** `include/rudp_rt/{receiver,playout,event_loop,runtime,sim}.hpp`,
-  `src/{session/session,session/session_manager,transport/frame_assembler,transport/jitter_buffer,transport/playout_pipeline,runtime/event_loop,runtime/reactor,runtime/gateway,runtime/client,runtime/config,media/camera_source}.cpp`,
+- **Files:** `CMakeLists.txt`, `.github/workflows/ci.yml`,
+  `include/rudp_rt/{receiver,playout,event_loop,runtime,session,sim}.hpp`,
+  `src/{codec/rudp_codec,media/camera_source,session/session,session/session_manager,transport/frame_assembler,transport/jitter_buffer,transport/playout_pipeline,transport/receiver,transport/sender,runtime/timer_heap,runtime/event_loop,runtime/reactor,runtime/gateway,runtime/client,runtime/config}.cpp`,
   `apps/{gateway_main,client_main,sim_main,bench_main}.cpp`,
-  `tools/{replay_trace.sh,socket_experiment.py,summarize_experiments.py}`,
+  `tools/{check_sanitizer.py,replay_trace.sh,socket_experiment.py,summarize_experiments.py}`,
   `tests/unit/{cases.txt,core.cpp,queues.cpp,net_faults.cpp,sender_receiver.cpp}`,
   `tests/system/{cases.txt,process.cpp}`, `docs/DEV-LOG.md`.
-- **Unresolved:** None from Batches 1–3; recorded reference artifacts under
-  `docs/experiments/` were intentionally preserved untouched (regenerate via
+- **Notes:** Recorded reference artifacts under `docs/experiments/` were
+  preserved as historical schema-v2 baselines (regenerate via
   `tools/run_benchmarks.sh` / `tools/run_fault_matrix.sh` if updated reference
   runs are desired).

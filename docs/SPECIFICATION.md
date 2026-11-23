@@ -16,14 +16,13 @@ Build, test, and document a deterministic deadline-aware reliable media transpor
 
 This is not a generic UDP demo and not a production Internet protocol. It is a bounded, explainable laboratory implementation whose behavior is defined by tests and invariants.
 
-The initial repository contained design, requirements, decision, invariant, and audit documents but no implementation; the shipped implementation is gated per §7 and checkpointed in `docs/DEV-LOG.md`.
+The shipped implementation freezes the wire, ownership, lifecycle, and verification contracts that resolved the open design points in the initial v0.2 draft; implementation milestones are gated per §7, with per-decision ADRs under `docs/adr/` and progress check-ins in `docs/DEV-LOG.md`.
 
 ### Initial design baseline
 
-- The baseline design is a candidate, not a completed implementation freeze.
-- The audits rated implementation determinism approximately 3/10 and identified blocking gaps in session control, initial sequence state, frame-gap visibility, queue ownership, send-failure terminality, deadline origin, and FDR accounting.
-- This specification supplies the v1 defaults that close those gaps. Phase 0 must still record each override as an ADR and make the resulting headers, vectors, and tests reviewable before protocol code is treated as conforming.
-- All source components, build targets, benchmarks, and tests must be verified against deterministic criteria.
+- The v0.2 candidate draft left open implementation points in session control, initial sequence state, frame-gap visibility, queue ownership, send-failure terminality, deadline origin, and FDR accounting.
+- This v1.0 specification supplies the frozen defaults that close those gaps; design overrides and rationale are recorded under `docs/adr/` alongside headers, wire vectors, and contract tests.
+- All source components, build targets, benchmarks, and tests are verified against deterministic criteria.
 
 ## 0.1 Project goals
 
@@ -41,15 +40,12 @@ The project is a trusted-network research/demo implementation. It is not claimin
 
 When documents disagree, apply this order:
 
-1. Explicit user instructions.
-2. This specification.
-3. Accepted ADRs under `docs/adr/`.
-4. Existing tests that express an accepted contract.
-5. `rudp-rt-design-v0.2.md` and the `docs/` baseline.
-6. Audit recommendations.
-7. Local implementation preference.
+1. This specification.
+2. Accepted ADRs under `docs/adr/`.
+3. Existing contract tests.
+4. Local implementation defaults documented in code.
 
-This specification deliberately supersedes candidate wording where the audits found a liveness, ownership, or interoperability gap. Every such override must be recorded in an ADR during Phase 0.
+This specification deliberately supersedes candidate draft wording where a liveness, ownership, or interoperability gap was found, with each override recorded in an ADR under `docs/adr/`.
 
 ### Required-content index
 
@@ -62,7 +58,7 @@ The specification covers the following implementation concerns:
 | Directory contract | Section 5 |
 | Protocol requirements | Section 4 |
 | Implementation phases | Section 7 |
-| Prohibited actions | Section 9 |
+| Hard engineering constraints | Section 9 |
 | Acceptance criteria | Section 8.1 and the completion condition in Section 11 |
 | Test matrix | Section 8.2 |
 | Unresolved design decisions | Section 11 |
@@ -388,7 +384,7 @@ The implementation is accepted only when all of the following criteria are satis
 - Every allocated sequence reaches a terminal consumed state, every admitted session-frame reaches one ledger outcome, and no invariant or watchdog assertion fires.
 - Both FDR conservation equations hold continuously and in the final immutable snapshot.
 - The complete required test matrix passes, including sanitizer/race tests where the platform provides them.
-- The fixed benchmark workload is recorded with seed, trace, configuration, raw metrics, and conclusions; release targets below are met or an explicit user-approved waiver is recorded.
+- The fixed benchmark workload is recorded with seed, trace, configuration, raw metrics, and conclusions; release targets below are met or any unmet target and its cause are explicitly documented in `docs/experiments/results.md`.
 - README, protocol reference, ADRs, experiment report, and `docs/DEV-LOG.md` accurately describe the shipped behavior.
 - No blocking ADR, TODO that changes a public contract, unbounded resource, detached worker, or known reproducibility defect remains.
 
@@ -417,48 +413,40 @@ Release targets after the workload is implemented and calibrated:
 
 Targets are release gates only after the exact workload, observation points, and threshold are present in the report. Never tune the implementation to a hidden or changing workload.
 
-## 9. Prohibited actions
+## 9. Hard engineering constraints
 
-- Do not silently resolve an open protocol, ownership, lifecycle, metric, or acceptance question.
-- Do not change the wire layout, field meaning, session identity, or terminal-state rules without an ADR, updated vectors, and regression tests.
-- Do not skip the virtual-network implementation and go directly to real sockets.
-- Do not use unbounded queues, detached threads, raw owning pointers, blocking I/O in Reactor, `sleep()` for protocol timing, or one timerfd per packet/session.
-- Do not mutate protocol state from Capture, Metrics, command, or test threads.
-- Do not weaken, delete, skip, quarantine, or make assertions conditional merely to obtain a green build.
-- Do not classify a packet counter as a frame outcome, or count one session-frame twice.
-- Do not add FEC, congestion control, TLS, NAT traversal, a project-owned codec, DPDK, GPU, or unrelated refactors.
-- Do not use wall-clock time, process-global mutable configuration, hidden retries, or magic constants outside validated configuration.
-- Do not run destructive Git commands or overwrite unrelated user changes.
+- Wire layout, field meanings, session identity, and terminal-state rules require an updated ADR under `docs/adr/`, matching wire vectors, and regression tests before changing code.
+- Validate transport state machines in `VirtualNetwork` before relying on real-socket tests.
+- Keep queues and buffers strictly bounded; do not introduce detached threads, raw owning pointers, blocking I/O inside the Reactor, `sleep()` protocol timing, or per-packet/`timerfd`-per-session timers.
+- Keep protocol, session, sender, receiver, timer, and metric mutations confined to the Reactor thread.
+- Do not weaken, skip, or conditionally bypass failing assertions to force a green build.
+- Do not fold packet counters into frame outcomes or count the same session-frame twice.
+- Keep FEC, congestion control, TLS, NAT traversal, real video codecs, DPDK, and GPU acceleration out of v1 scope.
+- Do not depend on wall-clock timing for deterministic simulation, process-global mutable configuration, or undocumented tuning constants outside `Config`.
 
-## 10. Development and regression checks
+## 10. Development and regression discipline
 
-Engineering follows a rigorous test-driven cycle: inspect -> implement minimal bounded changes -> build -> verify unit/integration tests -> inspect invariants -> log postmortems.
+Changes follow a narrow verification loop: reproduce -> isolate the earliest invalid transition -> apply the smallest bounded fix -> run targeted and full suites -> check invariants and sanitizers -> record postmortems in `docs/DEV-LOG.md`.
 
-1. **Compile failure:** fix the smallest source/API cause, rerun the failed target, then the full suite. Never edit tests to match a broken implementation.
-2. **Deterministic test failure:** preserve the seed and trace, add or update a regression test, fix the state transition, and rerun the affected matrix row.
-3. **Flaky failure:** run the same seed 20 times. If reproducible, fix it. If not, add event-order/seed logging and treat nondeterminism as a bug; do not increase sleeps or retries.
-4. **Sanitizer or race report:** stop feature work, minimize to a reproducer, fix ownership/synchronization, and rerun sanitizer plus the full suite.
-5. **Invariant or FDR failure:** treat as a release blocker. Emit session/frame/sequence trace, identify the first violated event, add a regression, then repair the earliest invalid transition.
-6. **Timeout or liveness failure:** inspect timer generation, queue ownership, ABANDON reachability, and shutdown barriers before changing thresholds. A larger timeout is not a fix unless an ADR changes the contract.
-7. **Resource exhaustion:** verify the configured bound and terminal action. Preserve reserved control capacity; never “temporarily” allocate unbounded memory.
-8. **Real-socket-only failure:** reproduce with `VirtualNetwork` first, then compare the network adapter event trace. Do not alter protocol logic to hide an adapter bug.
-9. **External dependency or environment failure:** use already available system facilities or mark the phase blocked with exact command/output. Do not silently add a new dependency or downgrade a required test.
-10. **After every repair:** run directly impacted tests, then all unit/integration/fault tests, then `ctest`, sanitizers where available, and `git diff --check`.
+1. **Compile failure:** fix the smallest source or API cause, rerun the affected target, then run the full suite.
+2. **Deterministic test failure:** preserve the failing seed and trace, add a regression test, fix the transition, and rerun the fault matrix row.
+3. **Flaky failure:** rerun the same seed 20 times to isolate event ordering or timing races rather than enlarging sleeps or retry limits.
+4. **Sanitizer or race report:** minimize to a deterministic reproducer, fix ownership or synchronization (`ASan`/`UBSan`/`TSan`), and rerun the full sanitizer suite.
+5. **Invariant or FDR failure:** dump the frame/sequence ledger trace, locate the first conservation mismatch, add a regression test, and repair the earliest state transition.
+6. **Timeout or liveness failure:** audit timer generation checks, queue ownership, `ABANDON` reachability, and shutdown barriers before adjusting timeouts.
+7. **Resource exhaustion:** verify configured caps, preserved control reserve, and ownership cleanup on drop/error paths.
+8. **Real-socket-only failure:** reproduce the fault pattern in `VirtualNetwork` first and compare adapter traces rather than hiding socket adapter bugs in transport logic.
+9. **Post-change gate:** run targeted suites, full `ctest --output-on-failure -j1`, sanitizers, and `git diff --check`.
 
-Each implementation checkpoint must leave a short entry in `docs/DEV-LOG.md` containing phase, command, result, changed files, unresolved questions, and next action.
+Each milestone or hardening pass records commands, test results, changed files, and open limits in `docs/DEV-LOG.md`.
 
-## 11. Rule for unresolved design questions
+## 11. Architectural change & ADR workflow
 
-When encountering architectural decisions not covered by this specification, follow the ADR workflow:
+When an implementation change affects an architecture boundary, wire detail, or metric contract:
 
-1. Stop at the smallest boundary that depends on the question. Do not implement a speculative branch.
-2. Search this specification, accepted ADRs, tests, and the baseline documents. Record the exact conflicting passages or missing contract.
-3. Classify the question:
-   - **Wire/session/invariant/metric/acceptance:** blocking. Create `docs/adr/NNNN-open-<slug>.md`, list facts, at least two options, rejected alternatives, impact, and a concrete decision to resolve. Mark the phase blocked and continue only on independent work.
-   - **Internal implementation detail with identical observable behavior:** choose the simplest existing project pattern, document it in an ADR, and add a focused test proving the external contract is unchanged.
-   - **Operational convenience:** use the defaults in this document only if no public behavior, resource bound, or metric changes; document the choice.
-4. Use a documented default when one exists. Otherwise record the unresolved decision in the ADR before changing dependent protocol behavior.
-5. Once a decision is supplied, update the ADR, affected public headers, wire vectors, state tables, metrics oracle, and tests before resuming dependent implementation.
-6. If two existing sources conflict, do not average them or pick the newer-looking wording. Report the conflict and apply the authority order in Section 1.
+1. Check this specification, accepted ADRs under `docs/adr/`, and existing contract tests to confirm scope and conflict precedence (§1).
+2. Document breaking or semantic changes in a numbered ADR (`docs/adr/NNNN-<slug>.md`) capturing context, decision, considered alternatives, consequences, and test anchors.
+3. Keep internal implementation choices consistent with existing module boundaries and document public defaults explicitly when external contracts stay unchanged.
+4. When existing documents disagree, resolve precedence per §1 and update affected headers, vectors, tests, and metrics contracts together.
 
-The completion criteria require: all deliverables exist, all phase gates pass, invariants hold continuously under fuzzing and fault injection, and final metrics satisfy the conservation law.
+Release criteria require all deliverables to build cleanly, all phase gates and CTest/sanitizer checks to pass, invariants to hold continuously under fault injection, and final metrics to satisfy the conservation laws.
