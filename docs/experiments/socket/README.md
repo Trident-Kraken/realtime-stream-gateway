@@ -35,8 +35,9 @@ Host: `Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39`; Python 3.
 All processes exit successfully with final metrics; all sessions have zero
 in-flight frames at shutdown; watchdog/resource/queue-overflow counters are zero.
 The proxy bounds its send heap to 4096 datagrams and peers to 16. Raw gateway
-and client snapshots, process logs, proxy packet events and per-cell result.json
-are retained in each scenario directory.
+and client snapshots, process logs, and per-cell result.json are retained in
+each scenario directory, with a sample packet-events.jsonl trace kept under
+outage-400ms-24301/ (re-running tools/socket_experiment.py regenerates full per-cell traces).
 
 ## Limits and reproduction
 
