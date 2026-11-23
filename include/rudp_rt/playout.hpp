@@ -82,6 +82,7 @@ class PlayoutPipeline {
   }
   std::size_t jitter_depth() const { return jitter_.size(); }
   std::size_t reorder_depth() const { return receiver_.storage_size(); }
+  std::uint64_t bytes_owned() const;
   const PacketCounters& receiver_counters() const {
     return receiver_.counters();
   }
@@ -90,6 +91,7 @@ class PlayoutPipeline {
  private:
   bool terminal(std::uint32_t id) const;
   bool close_frame(std::uint32_t id, SessionFrameOutcome outcome);
+  void reset_session_state();
   std::deque<std::uint32_t> terminal_ids_;  // bounded by receive horizon
   std::function<void(std::uint32_t, SessionFrameOutcome)> frame_observer_;
   void process_accepted(std::vector<AcceptedPacket>& accepted, MonoNs now);

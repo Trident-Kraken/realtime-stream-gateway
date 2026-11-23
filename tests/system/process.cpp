@@ -118,6 +118,23 @@ RUDP_TEST(system_localhost_e2e) {
   RUDP_CHECK_GT(json_num(cl_json, "delivered_ontime") +
                     json_num(cl_json, "delivered_late"),
                 0u);
+  RUDP_CHECK_GE(json_num(gw_json, "timer"), 1u);
+  RUDP_CHECK_LE(json_num(gw_json, "timer"), 2u);
+  RUDP_CHECK_GT(json_num(gw_json, "data_sent"), 0u);
+  RUDP_CHECK_GT(json_num(gw_json, "acks_received"), 0u);
+  RUDP_CHECK_GT(json_num(cl_json, "data_received"), 0u);
+  RUDP_CHECK_GT(json_num(cl_json, "acks_sent"), 0u);
+  RUDP_CHECK_EQ(json_num(cl_json, "consumer_dropped"), 0u);
+  RUDP_CHECK_GT(json_num(cl_json, "memory_high_water_bytes"), 0u);
+
+  std::ifstream cl_stream(dir + "/cl.jsonl");
+  std::string row;
+  std::size_t cl_lines = 0;
+  while (std::getline(cl_stream, row)) {
+    RUDP_CHECK(!row.empty());  // no blank JSONL separator lines
+    ++cl_lines;
+  }
+  RUDP_CHECK_GE(cl_lines, 2u);  // periodic snapshots + final snapshot
 }
 
 RUDP_TEST(system_three_clients) {
@@ -218,6 +235,44 @@ RUDP_TEST(system_unreachable_gateway) {
   RUDP_CHECK_EQ(wait_exit(clp), 0);
   const std::string cl = last_json_line(dir + "/cl.jsonl");
   RUDP_CHECK(cl.find("\"final\":true") != std::string::npos);
+}
+
+RUDP_TEST(system_cli_overrides_config_and_rejects_bad_args) {
+  const std::string dir = run_dir();
+  const std::string gw_bin = RUDP_BIN_DIR "/rudp_gateway";
+  const std::string cl_bin = RUDP_BIN_DIR "/rudp_client";
+  const std::string sim_bin = RUDP_BIN_DIR "/rudp_sim";
+  const std::string bench_bin = RUDP_BIN_DIR "/rudp_bench";
+
+  const std::string cfg_path = dir + "/override.toml";
+  {
+    std::ofstream cfg_out(cfg_path);
+    cfg_out << "[gateway]\nport = 50380\nstream_id = 9\n";
+  }
+
+  // CLI flags (--port 50381, --stream 2) must override --config even when
+  // specified before --config.
+  auto gw = spawn_bg(gw_bin, {"--port", "50381", "--stream", "2", "--config",
+                              cfg_path, "--duration", "2000", "--metrics-out",
+                              dir + "/gw_cli.jsonl"});
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  auto cl = spawn_bg(cl_bin, {"--port", "50381", "--stream", "2", "--duration",
+                              "1200", "--metrics-out", dir + "/cl_cli.jsonl"});
+  RUDP_CHECK_EQ(wait_exit(cl), 0);
+  RUDP_CHECK_EQ(wait_exit(gw), 0);
+
+  const std::string cl_json = last_json_line(dir + "/cl_cli.jsonl");
+  RUDP_CHECK(cl_json.find("\"final\":true") != std::string::npos);
+  RUDP_CHECK_GT(json_num(cl_json, "delivered_ontime") +
+                    json_num(cl_json, "delivered_late"),
+                0u);
+
+  // Invalid numeric CLI flags must return exit code 2, never crash/abort.
+  RUDP_CHECK_EQ(wait_exit(spawn(gw_bin, {"--port", "abc"})), 2);
+  RUDP_CHECK_EQ(wait_exit(spawn(gw_bin, {"--port", "70000"})), 2);
+  RUDP_CHECK_EQ(wait_exit(spawn(cl_bin, {"--port", "abc", "--duration", "100"})), 2);
+  RUDP_CHECK_EQ(wait_exit(spawn(sim_bin, {"--frames", "abc"})), 2);
+  RUDP_CHECK_EQ(wait_exit(spawn(bench_bin, {"--reps", "abc"})), 2);
 }
 
 }  // namespace rudp_test

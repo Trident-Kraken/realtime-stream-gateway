@@ -16,6 +16,14 @@ void JitterBuffer::set_anchor(MonoNs arrival, std::uint32_t rtp_timestamp,
   playout_delay_ = playout_delay;
 }
 
+void JitterBuffer::reset() {
+  pending_.clear();
+  dead_.clear();
+  anchored_ = false;
+  anchor_arrival_ = 0;
+  anchor_rtp_ts_ = 0;
+}
+
 MonoNs JitterBuffer::playout_for(std::uint32_t rtp_timestamp) const {
   if (!anchored_) return INT64_MAX;
   return rtp_to_mono(anchor_arrival_, anchor_rtp_ts_, rtp_timestamp) +
@@ -24,10 +32,6 @@ MonoNs JitterBuffer::playout_for(std::uint32_t rtp_timestamp) const {
 
 // Insert keeping `pending_` sorted by serial frame order so the front is the
 // oldest not-yet-delivered frame (INV-09 ordering, overflow policy).
-static std::size_t serial_rank(std::uint32_t frame_id, std::uint32_t base) {
-  return frame_id - base;
-}
-
 std::vector<JitterBuffer::Delivery> JitterBuffer::push(CompletedFrame&& frame,
                                                        MonoNs now) {
   std::vector<Delivery> immediate;
@@ -43,13 +47,10 @@ std::vector<JitterBuffer::Delivery> JitterBuffer::push(CompletedFrame&& frame,
     return immediate;
   }
 
-  const std::uint32_t base =
-      pending_.empty() ? frame.frame_id : pending_.front().frame.frame_id;
   Entry entry{std::move(frame), playout};
-  const std::size_t rank = serial_rank(entry.frame.frame_id, base);
   auto pos = pending_.begin();
   while (pos != pending_.end() &&
-         serial_rank(pos->frame.frame_id, base) < rank) {
+         frame_lt(pos->frame.frame_id, entry.frame.frame_id)) {
     ++pos;
   }
   pending_.insert(pos, std::move(entry));
@@ -127,6 +128,14 @@ std::optional<MonoNs> JitterBuffer::next_delivery_deadline() const {
     if (!best || e.playout < *best) best = e.playout;
   }
   return best;
+}
+
+std::uint64_t JitterBuffer::bytes_owned() const {
+  std::uint64_t total = 0;
+  for (const auto& e : pending_) {
+    total += e.frame.bytes.size();
+  }
+  return total;
 }
 
 }  // namespace rudp_rt

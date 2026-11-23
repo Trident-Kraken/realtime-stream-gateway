@@ -49,7 +49,7 @@ python3 tools/socket_experiment.py --scenario outage-400ms --reps 1 --out /tmp/r
 python3 tools/render_demo.py /tmp/gop.json --svg /tmp/gop.svg --replay
 ```
 
-86 CTest cases cover unit, property, integration, fault, benchmark-contract and
+118 CTest cases cover unit, property, integration, fault, benchmark-contract and
 real-socket scenarios. CI verifies actual sanitizer compilation/linkage and runs
 ASan/UBSan and TSan; the dynamic CI badge links to current results.
 
@@ -58,13 +58,13 @@ cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=address \
   -DRUDP_WERROR=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build build-asan -j4
 python3 tools/check_sanitizer.py build-asan address
-ctest --test-dir build-asan --output-on-failure -E '^system\.' -j1
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ctest --test-dir build-asan --output-on-failure -j1
 
 cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=thread \
   -DRUDP_WERROR=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build build-tsan -j4
 python3 tools/check_sanitizer.py build-tsan thread
-ctest --test-dir build-tsan --output-on-failure -R '^(unit|integration|fault)\.' -j1
+ctest --test-dir build-tsan --output-on-failure -R '^(unit|integration|fault|system)\.' -j1
 ```
 
 ## Results and interpretation

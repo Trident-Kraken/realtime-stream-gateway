@@ -56,6 +56,11 @@ Datagram build_ping(const Endpoint& peer, std::uint16_t stream_id,
   return dg;
 }
 
+bool is_data_datagram(const Datagram& dg) {
+  return dg.bytes.size() >= kHeaderSize &&
+         static_cast<PacketType>(dg.bytes[1]) == PacketType::DATA;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -116,9 +121,14 @@ MonoNs Session::next_timer_deadline(const Config& cfg) const {
   const auto consider = [&best](MonoNs t) {
     if (!best || t < *best) best = t;
   };
-  // Keepalive probe scheduling (spec §4.3).
-  consider(std::max(last_outbound_ + cfg.keepalive_silence_after,
-                    last_probe_sent_ + cfg.keepalive_min_interval));
+  // Keepalive probe scheduling / final probe grace expiry (spec §4.3).
+  if (unanswered_probes_ >=
+      static_cast<std::uint32_t>(cfg.keepalive_max_probes)) {
+    consider(last_probe_sent_ + cfg.keepalive_min_interval);
+  } else {
+    consider(std::max(last_outbound_ + cfg.keepalive_silence_after,
+                      last_probe_sent_ + cfg.keepalive_min_interval));
+  }
   // ACK starvation watch (spec §4.3) while the window is non-empty.
   if (!sender.window_empty()) {
     consider(last_valid_ack_time_ +
@@ -147,7 +157,10 @@ bool Session::probe_matches(std::uint32_t nonce) const {
   return last_probe_nonce_ != 0 && nonce == last_probe_nonce_;
 }
 
-void Session::probe_answered() { unanswered_probes_ = 0; }
+void Session::probe_answered() {
+  unanswered_probes_ = 0;
+  last_probe_nonce_ = 0;
+}
 
 Session::LivenessScan Session::liveness_scan(const Config& cfg, MonoNs now) {
   LivenessScan scan;
@@ -174,15 +187,20 @@ Session::LivenessScan Session::liveness_scan(const Config& cfg, MonoNs now) {
     return scan;
   }
 
-  // Keepalive probes after outbound silence (spec §4.3).
+  // Keepalive probes after outbound silence (spec §4.3): give the final
+  // probe one full keepalive_min_interval before declaring timeout.
+  if (unanswered_probes_ >=
+      static_cast<std::uint32_t>(cfg.keepalive_max_probes)) {
+    if (now - last_probe_sent_ >= cfg.keepalive_min_interval) {
+      scan.teardown = TeardownCause::SESSION_TIMEOUT;
+    }
+    return scan;
+  }
+
   const MonoNs silence = now - last_outbound_;
   if (silence >= cfg.keepalive_silence_after &&
       now - last_probe_sent_ >= cfg.keepalive_min_interval) {
     scan.probe_due = true;
-  }
-  if (unanswered_probes_ >=
-      static_cast<std::uint32_t>(cfg.keepalive_max_probes)) {
-    scan.teardown = TeardownCause::SESSION_TIMEOUT;
   }
   return scan;
 }
@@ -281,6 +299,10 @@ void GatewayNode::handle_ping(const Datagram& dg, const Header& h,
 
 void GatewayNode::handle_join(Session* existing, const Endpoint& peer,
                               const Header& h, const Ping& ping, MonoNs now) {
+  if (shutting_down_) {
+    counters_.stale_control++;
+    return;
+  }
   if (existing != nullptr && !existing->dead &&
       ping.client_epoch == existing->client_epoch) {
     // Idempotent duplicate JOIN: same PONG values (spec §4.3).
@@ -398,8 +420,11 @@ void GatewayNode::handle_ack_or_nack(const Datagram& dg, const Header&,
       counters_.malformed++;
       return;
     }
+    const std::uint64_t valid_before = s.sender.counters().acks_received;
     s.sender.on_ack(ack.ack, now);
-    s.note_ack(now);  // evidence of liveness (spec §4.3)
+    if (s.sender.counters().acks_received > valid_before) {
+      s.note_ack(now);  // evidence of liveness only on valid ACK (spec §4.3)
+    }
   } else {
     auto nack = decode_nack(payload_of(dg));
     if (nack.reject != RejectReason::NONE) {
@@ -425,9 +450,12 @@ void GatewayNode::route_sender_output(Session& s) {
       s.frames.close(SessionFrameOutcome::PRE_ADMISSION_DROPPED);
     }
   }
+  std::vector<std::uint32_t> closed_fids;
+  closed_fids.reserve(out.closures.size());
   for (const auto& c : out.closures) {
     s.frames.close(c.outcome);
     if (frame_observer_) frame_observer_(s.id, c.frame_id, c.outcome);
+    closed_fids.push_back(c.frame_id);
   }
   if (!s.frames.conserved()) std::abort();
   for (auto& dg : out.control) {
@@ -439,8 +467,34 @@ void GatewayNode::route_sender_output(Session& s) {
     }
   }
   for (auto& dg : out.data) {
-    s.data_queue.push_back(std::move(dg));
+    if (!is_data_datagram(dg)) continue;
+    const std::uint32_t seq = load_u32(dg.bytes.data() + 8);
+    bool replaced = false;
+    for (auto& existing : s.data_queue) {
+      if (is_data_datagram(existing) &&
+          load_u32(existing.bytes.data() + 8) == seq) {
+        existing = std::move(dg);
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced &&
+        s.data_queue.size() < static_cast<std::size_t>(cfg_.window_w)) {
+      s.data_queue.push_back(std::move(dg));
+    }
     s.data_queue_hwm = std::max(s.data_queue_hwm, s.data_queue.size());
+  }
+  if (!closed_fids.empty()) {
+    const auto is_closed_data = [&closed_fids](const Datagram& dg) {
+      if (!is_data_datagram(dg)) return false;
+      const std::uint32_t fid = load_u32(dg.bytes.data() + 12);
+      return std::find(closed_fids.begin(), closed_fids.end(), fid) !=
+             closed_fids.end();
+    };
+    std::erase_if(s.data_queue, is_closed_data);
+    if (s.pending_out && is_closed_data(*s.pending_out)) {
+      s.pending_out.reset();
+    }
   }
   if (out.keyframe_requested && on_keyframe_request_) {
     on_keyframe_request_();
@@ -461,6 +515,7 @@ void GatewayNode::offer_frame(MediaFrame&& frame, MonoNs now) {
   for (auto& [key, s] : sessions_) {
     (void)key;
     if (s.dead) continue;
+    const bool was_empty = s.sender.window_empty();
     ++s.frames.offered_count;
     if (&s == last_live) {
       s.sender.on_frame(std::move(frame));
@@ -469,6 +524,9 @@ void GatewayNode::offer_frame(MediaFrame&& frame, MonoNs now) {
       s.sender.on_frame(std::move(copy));
     }
     route_sender_output(s);
+    if (was_empty && !s.sender.window_empty()) {
+      s.note_ack(clock_.now());  // reset ACK starvation baseline on idle->active
+    }
   }
   std::uint64_t mem = 0;
   for (auto& [key, s] : sessions_) {
@@ -541,10 +599,14 @@ void GatewayNode::teardown_session(std::uint32_t session_id,
     s.generation++;  // invalidates outstanding timer entries (INV-14)
     s.sender.teardown(cause, now);
     route_sender_output(s);
-    if (cause != TeardownCause::SHUTDOWN) {
+    s.data_queue.clear();
+    if (cause == TeardownCause::SHUTDOWN) {
+      if (s.pending_out && is_data_datagram(*s.pending_out)) {
+        s.pending_out.reset();
+      }
+    } else {
       // Peer is gone or misbehaving: drop queued output.
       while (!s.control.empty()) s.control.pop();
-      s.data_queue.clear();
       s.pending_out.reset();
     }
     return;
@@ -629,18 +691,32 @@ bool GatewayNode::pump(INetwork& net, MonoNs now) {
   };
 
   // Node-level control (PONG for unknown/unsynced peers).
+  std::int64_t node_count_left = cfg_.turn_datagram_limit;
+  std::int64_t node_bytes_left = cfg_.turn_byte_limit;
+  bool node_blocked = false;
   if (node_pending_) {
     Datagram dg = std::move(*node_pending_);
     node_pending_.reset();
-    if (send_one(dg, nullptr) == 0) pending = true;
+    const std::int64_t sz = static_cast<std::int64_t>(dg.bytes.size());
+    const int r = send_one(dg, nullptr);
+    if (r == 0) {
+      pending = true;
+      node_blocked = true;
+    } else if (r == 1) {
+      node_count_left--;
+      node_bytes_left -= sz;
+    }
   }
-  while (!node_control_.empty()) {
+  while (!node_blocked && !node_control_.empty() && node_count_left > 0 &&
+         node_bytes_left > 0) {
     node_control_tokens_.refill(now);
     const Datagram& front = node_control_.front();
-    if (!node_control_tokens_.try_take(
-            static_cast<std::int64_t>(front.bytes.size()))) {
-      pending = true;
+    const std::int64_t sz = static_cast<std::int64_t>(front.bytes.size());
+    if (sz > node_bytes_left && node_count_left < cfg_.turn_datagram_limit) {
       break;
+    }
+    if (!node_control_tokens_.try_take(sz)) {
+      break;  // token bucket empty; avoid EPOLLOUT spin on writable socket
     }
     Datagram dg = node_control_.pop();
     const int r = send_one(dg, nullptr);
@@ -649,6 +725,8 @@ bool GatewayNode::pump(INetwork& net, MonoNs now) {
       break;
     }
     if (r < 0) break;
+    node_count_left--;
+    node_bytes_left -= sz;
   }
 
   // Round-robin sessions from the rotating cursor (ADR-0008).
@@ -661,13 +739,63 @@ bool GatewayNode::pump(INetwork& net, MonoNs now) {
       Session& s = it->second;
       it = std::next(it) == sessions_.end() ? sessions_.begin()
                                             : std::next(it);
-      if (s.dead) continue;
+      if (s.dead) {
+        if (s.teardown_cause == TeardownCause::SHUTDOWN &&
+            (!s.control.empty() || s.pending_out)) {
+          pump_shutdown_control(s, now, send_one);
+          if (s.pending_out) pending = true;
+        }
+        continue;
+      }
       pump_session(s, net, now, send_one);
       if (s.pending_out) pending = true;
     }
     pump_cursor_ = (pump_cursor_ + 1) % n;
   }
   return pending;
+}
+
+void GatewayNode::pump_shutdown_control(
+    Session& s, MonoNs now,
+    const std::function<int(Datagram&, Session*)>& send_one) {
+  s.control_tokens.refill(now);
+  std::int64_t bytes_left = cfg_.turn_byte_limit;
+  std::int64_t count_left = cfg_.turn_datagram_limit;
+  if (s.pending_out) {
+    if (is_data_datagram(*s.pending_out)) {
+      s.pending_out.reset();
+    } else {
+      Datagram dg = std::move(*s.pending_out);
+      s.pending_out.reset();
+      const std::int64_t sz = static_cast<std::int64_t>(dg.bytes.size());
+      const int r = send_one(dg, &s);
+      if (r == 0) return;
+      if (r < 0) {
+        while (!s.control.empty()) s.control.pop();
+        s.pending_out.reset();
+        return;
+      }
+      count_left--;
+      bytes_left -= sz;
+    }
+  }
+  while (!s.control.empty() && count_left > 0 && bytes_left > 0) {
+    s.control_tokens.refill(now);
+    const Datagram& front = s.control.front();
+    const std::int64_t sz = static_cast<std::int64_t>(front.bytes.size());
+    if (sz > bytes_left && count_left < cfg_.turn_datagram_limit) break;
+    if (!s.control_tokens.try_take(sz)) break;
+    Datagram dg = s.control.pop();
+    const int r = send_one(dg, &s);
+    if (r == 0) return;
+    if (r < 0) {
+      while (!s.control.empty()) s.control.pop();
+      s.pending_out.reset();
+      return;
+    }
+    count_left--;
+    bytes_left -= sz;
+  }
 }
 
 void GatewayNode::pump_session(
@@ -682,31 +810,36 @@ void GatewayNode::pump_session(
   if (s.pending_out) {
     Datagram dg = std::move(*s.pending_out);
     s.pending_out.reset();
+    const std::int64_t sz = static_cast<std::int64_t>(dg.bytes.size());
     const int r = send_one(dg, &s);
     if (r != 1) return;
+    count_left--;
+    bytes_left -= sz;
   }
   if (s.dead) return;
 
   // 1. Control traffic — PONG, PING, ABANDON (priority over DATA).
-  while (!s.control.empty() && count_left > 0) {
+  while (!s.control.empty() && count_left > 0 && bytes_left > 0) {
     s.control_tokens.refill(now);
     const Datagram& front = s.control.front();
-    if (!s.control_tokens.try_take(
-            static_cast<std::int64_t>(front.bytes.size()))) {
+    const std::int64_t sz = static_cast<std::int64_t>(front.bytes.size());
+    if (sz > bytes_left && count_left < cfg_.turn_datagram_limit) break;
+    if (!s.control_tokens.try_take(sz)) {
       break;  // control bucket drained; refill next turn
     }
     Datagram dg = s.control.pop();
     const int r = send_one(dg, &s);
     if (r != 1) return;
     count_left--;
-    bytes_left -= static_cast<std::int64_t>(dg.bytes.size());
+    bytes_left -= sz;
   }
 
   // 2. Retransmitted DATA (priority over new DATA).
-  while (!s.data_queue.empty() && count_left > 0) {
+  while (!s.data_queue.empty() && count_left > 0 && bytes_left > 0) {
     Datagram& front = s.data_queue.front();
-    if (!s.data_tokens.try_take(
-            static_cast<std::int64_t>(front.bytes.size()))) {
+    const std::int64_t sz = static_cast<std::int64_t>(front.bytes.size());
+    if (sz > bytes_left && count_left < cfg_.turn_datagram_limit) break;
+    if (!s.data_tokens.try_take(sz)) {
       break;
     }
     Datagram dg = std::move(front);
@@ -714,7 +847,7 @@ void GatewayNode::pump_session(
     const int r = send_one(dg, &s);
     if (r != 1) return;
     count_left--;
-    bytes_left -= static_cast<std::int64_t>(dg.bytes.size());
+    bytes_left -= sz;
   }
 
   // 3. New DATA within the remaining turn and token budgets.
@@ -724,10 +857,12 @@ void GatewayNode::pump_session(
     if (budget < 64) break;  // below one minimum datagram
     auto dg = s.sender.emit_new_data(now, budget);
     if (!dg) break;
+    const std::int64_t sz = static_cast<std::int64_t>(dg->bytes.size());
+    (void)s.data_tokens.try_take(sz);
     const int r = send_one(*dg, &s);
     if (r != 1) return;
     count_left--;
-    bytes_left -= static_cast<std::int64_t>(dg->bytes.size());
+    bytes_left -= sz;
   }
 }
 

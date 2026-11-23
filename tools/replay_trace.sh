@@ -2,12 +2,12 @@
 # Replay a recorded scenario trace and verify bit-identical results
 # (deterministic virtual clock; spec Phase 5).
 #   Usage: tools/replay_trace.sh docs/experiments/fault-iid-005.json
-set -eu
+set -euo pipefail
 TRACE=$1
 OUT=${2:-/tmp/replay-check.json}
 BIN=${BIN:-build/rudp_sim}
 
-args=$(python3 - "$TRACE" <<'PY'
+mapfile -d '' args < <(python3 - "$TRACE" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 p = d["params"]
@@ -23,12 +23,13 @@ if p.get("jitter_ms"): args += ["--jitter", str(p["jitter_ms"])]
 if p.get("reorder"): args += ["--reorder", str(p["reorder"])]
 if p.get("duplicate"): args += ["--duplicate", str(p["duplicate"])]
 if p.get("clients"): args += ["--clients", str(p["clients"])]
+if p.get("deadline_mode") is False: args += ["--no-deadline"]
 if d.get("scenario"): args += ["--scenario", str(d["scenario"])]
 args += ["--seed", str(d["seed"]), "--frames", str(p.get("frames", 300))]
-print(" ".join(args))
+sys.stdout.buffer.write(b"\0".join(a.encode() for a in args) + b"\0")
 PY
 )
-"$BIN" $args --json "$OUT" > /dev/null
+"$BIN" "${args[@]}" --json "$OUT" > /dev/null
 if diff -q "$TRACE" "$OUT" > /dev/null; then
   echo "replay OK: $TRACE reproduced bit-identically"
 else

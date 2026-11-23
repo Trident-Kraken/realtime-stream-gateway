@@ -206,7 +206,7 @@ BenchResult run_rudp_arm(const std::string& arm, std::uint64_t seed,
 // fragment arrives; playout classification identical to the client.
 // ---------------------------------------------------------------------------
 struct UdpArmReceiver {
-  std::map<std::uint32_t, std::pair<std::uint32_t, std::uint32_t>> pending;
+  std::map<std::uint32_t, std::pair<std::uint64_t, std::uint32_t>> pending;
   std::uint64_t ontime = 0, late = 0, expired = 0;
   std::uint64_t delivered_frames = 0;
   MonoNs anchor_arrival = -1;
@@ -280,8 +280,12 @@ BenchResult run_udp_arm(std::uint64_t seed, double loss, int burst) {
       }
       if (fid < kWarmupFrames || fid >= kWarmupFrames + kMeasuredFrames ||
           completed.contains(fid)) continue;
+      if (hdr.header.frame_count == 0 || hdr.header.frame_index >= 64u ||
+          hdr.header.frame_index >= hdr.header.frame_count) {
+        continue;
+      }
       auto& st = rx.pending[fid];
-      const auto bit = 1u << hdr.header.frame_index;
+      const std::uint64_t bit = std::uint64_t{1} << hdr.header.frame_index;
       if ((st.first & bit) != 0) continue;
       st.first |= bit;
       ++st.second;
@@ -707,32 +711,63 @@ int main(int argc, char** argv) {
   std::string out_prefix = "bench";
   bool fanout = false;
 
-  for (int i = 1; i < argc; ++i) {
-    const std::string arg = argv[i];
-    auto next = [&]() -> std::string {
-      if (i + 1 >= argc) {
-        std::cerr << "missing value for " << arg << "\n";
-        std::exit(2);
+  try {
+    auto parse_int_arg = [](const std::string& flag, const std::string& val) {
+      std::size_t used = 0;
+      const int v = std::stoi(val, &used, 10);
+      if (used != val.size()) {
+        throw std::invalid_argument("invalid integer for " + flag + ": '" + val + "'");
       }
-      return argv[++i];
+      return v;
     };
-    if (arg == "--seed") base_seed = parse_seed(next());
-    else if (arg == "--reps") repetitions = std::stoi(next());
-    else if (arg == "--frames") kMeasuredFrames = static_cast<std::uint32_t>(std::stoul(next()));
-    else if (arg == "--loss") loss = std::stod(next());
-    else if (arg == "--burst") burst = std::stoi(next());
-    else if (arg == "--clients") clients = std::stoi(next());
-    else if (arg == "--out") out_prefix = next();
-    else if (arg == "--fanout") fanout = true;
-    else if (arg == "--help") {
-      std::cout << "usage: rudp_bench [--seed N] [--reps N] [--loss P]\n"
-                   "                  [--burst N] [--clients N] [--out PREFIX]\n"
-                   "                  [--fanout]\n";
-      return 0;
-    } else {
-      std::cerr << "unknown argument: " << arg << "\n";
-      return 2;
+    auto parse_u32_arg = [](const std::string& flag, const std::string& val) {
+      if (val.empty() || val.front() == '-') {
+        throw std::invalid_argument("invalid uint32 for " + flag + ": '" + val + "'");
+      }
+      std::size_t used = 0;
+      const std::uint64_t v = std::stoull(val, &used, 10);
+      if (used != val.size() || v > 0xFFFFFFFFull) {
+        throw std::invalid_argument("invalid uint32 for " + flag + ": '" + val + "'");
+      }
+      return static_cast<std::uint32_t>(v);
+    };
+    auto parse_double_arg = [](const std::string& flag, const std::string& val) {
+      std::size_t used = 0;
+      const double v = std::stod(val, &used);
+      if (used != val.size() || !std::isfinite(v)) {
+        throw std::invalid_argument("invalid float for " + flag + ": '" + val + "'");
+      }
+      return v;
+    };
+    for (int i = 1; i < argc; ++i) {
+      const std::string arg = argv[i];
+      auto next = [&]() -> std::string {
+        if (i + 1 >= argc) {
+          throw std::invalid_argument("missing value for " + arg);
+        }
+        return argv[++i];
+      };
+      if (arg == "--seed") base_seed = parse_seed(next());
+      else if (arg == "--reps") repetitions = parse_int_arg(arg, next());
+      else if (arg == "--frames") kMeasuredFrames = parse_u32_arg(arg, next());
+      else if (arg == "--loss") loss = parse_double_arg(arg, next());
+      else if (arg == "--burst") burst = parse_int_arg(arg, next());
+      else if (arg == "--clients") clients = parse_int_arg(arg, next());
+      else if (arg == "--out") out_prefix = next();
+      else if (arg == "--fanout") fanout = true;
+      else if (arg == "--help") {
+        std::cout << "usage: rudp_bench [--seed N] [--reps N] [--loss P]\n"
+                     "                  [--burst N] [--clients N] [--out PREFIX]\n"
+                     "                  [--fanout]\n";
+        return 0;
+      } else {
+        std::cerr << "unknown argument: " << arg << "\n";
+        return 2;
+      }
     }
+  } catch (const std::exception& e) {
+    std::cerr << "rudp_bench: " << e.what() << "\n";
+    return 2;
   }
 
   if (kMeasuredFrames == 0 || kMeasuredFrames > 1000000 || repetitions < 1 ||
@@ -741,65 +776,72 @@ int main(int argc, char** argv) {
     std::cerr << "invalid benchmark parameters\n";
     return 2;
   }
-  std::vector<std::ostringstream> docs(1);
-  std::ostringstream& json = docs[0];
-  json << "{\n  \"schema_version\":2,\n";
+  try {
+    std::vector<std::ostringstream> docs(1);
+    std::ostringstream& json = docs[0];
+    json << "{\n  \"schema_version\":2,\n";
 
-  if (!fanout) {
-    // Arms 1+2: UDP / TCP-model / RUDP-RT / RUDP-RT-always-retransmit.
-    std::vector<BenchResult> udp_runs, tcp_runs, rudp_runs, always_runs;
-    for (int i = 0; i < repetitions; ++i) {
-      const std::uint64_t seed = base_seed + static_cast<std::uint64_t>(i);
-      udp_runs.push_back(run_udp_arm(seed, loss, burst));
-      std::cout.flush(); std::cout << "udp seed=" << std::hex << seed << std::dec
-                << " fdr=" << udp_runs.back().fdr_playout << "\n";
-      tcp_runs.push_back(run_tcp_arm(seed, loss, burst));
-      std::cout << "tcp-model seed=" << std::hex << seed << std::dec
-                << " fdr=" << tcp_runs.back().fdr_playout << "\n";
-      rudp_runs.push_back(run_rudp_arm("rudp", seed, loss, burst, 1, true));
-      std::cout << "rudp seed=" << std::hex << seed << std::dec
-                << " fdr=" << rudp_runs.back().fdr_playout << "\n";
-      always_runs.push_back(run_rudp_arm("rudp-always", seed, loss, burst, 1,
-                                         false));
-      std::cout << "rudp-always seed=" << std::hex << seed << std::dec
-                << " fdr=" << always_runs.back().fdr_playout << "\n";
+    if (!fanout) {
+      // Arms 1+2: UDP / TCP-model / RUDP-RT / RUDP-RT-always-retransmit.
+      std::vector<BenchResult> udp_runs, tcp_runs, rudp_runs, always_runs;
+      for (int i = 0; i < repetitions; ++i) {
+        const std::uint64_t seed = base_seed + static_cast<std::uint64_t>(i);
+        udp_runs.push_back(run_udp_arm(seed, loss, burst));
+        std::cout.flush(); std::cout << "udp seed=" << std::hex << seed << std::dec
+                  << " fdr=" << udp_runs.back().fdr_playout << "\n";
+        tcp_runs.push_back(run_tcp_arm(seed, loss, burst));
+        std::cout << "tcp-model seed=" << std::hex << seed << std::dec
+                  << " fdr=" << tcp_runs.back().fdr_playout << "\n";
+        rudp_runs.push_back(run_rudp_arm("rudp", seed, loss, burst, 1, true));
+        std::cout << "rudp seed=" << std::hex << seed << std::dec
+                  << " fdr=" << rudp_runs.back().fdr_playout << "\n";
+        always_runs.push_back(run_rudp_arm("rudp-always", seed, loss, burst, 1,
+                                           false));
+        std::cout << "rudp-always seed=" << std::hex << seed << std::dec
+                  << " fdr=" << always_runs.back().fdr_playout << "\n";
+      }
+
+      json << "  \"workload\": {\"fps\":30,\"frame_bytes\":12000,"
+           << "\"packets_per_frame\":10,\"rtt_ms\":10,\"jitter_ms\":2,"
+           << "\"deadline_ms\":100,\"playout_ms\":60,\"warmup\":"
+           << kWarmupFrames << ",\"measured\":" << kMeasuredFrames << "},\n";
+      json << "  \"arms\":[\n";
+      append_json(json, udp_runs);
+      json << ",\n";
+      append_json(json, tcp_runs);
+      json << ",\n";
+      append_json(json, rudp_runs);
+      json << ",\n";
+      append_json(json, always_runs);
+      json << "\n  ]\n}\n";
+    } else {
+      // Arm 3: fan-out to three clients; per-session ledgers must conserve.
+      std::vector<BenchResult> runs;
+      for (int i = 0; i < repetitions; ++i) {
+        const std::uint64_t seed = base_seed + static_cast<std::uint64_t>(i);
+        runs.push_back(run_rudp_arm("rudp-fanout", seed, loss, burst, clients,
+                                    true));
+        std::cout << "fanout seed=" << std::hex << seed << std::dec
+                  << " fdr=" << runs.back().fdr_playout << "\n";
+      }
+      json << "  \"workload\": {\"clients\":" << clients
+           << ",\"fps\":30,\"frame_bytes\":12000,\"warmup\":100,\"measured\":"
+           << kMeasuredFrames << "},\n";
+      json << "  \"arms\":[\n";
+      append_json(json, runs);
+      json << "\n  ]\n}\n";
     }
 
-    json << "  \"workload\": {\"fps\":30,\"frame_bytes\":12000,"
-         << "\"packets_per_frame\":10,\"rtt_ms\":10,\"jitter_ms\":2,"
-         << "\"deadline_ms\":100,\"playout_ms\":60,\"warmup\":"
-         << kWarmupFrames << ",\"measured\":" << kMeasuredFrames << "},\n";
-    json << "  \"arms\":[\n";
-    append_json(json, udp_runs);
-    json << ",\n";
-    append_json(json, tcp_runs);
-    json << ",\n";
-    append_json(json, rudp_runs);
-    json << ",\n";
-    append_json(json, always_runs);
-    json << "\n  ]\n}\n";
-  } else {
-    // Arm 3: fan-out to three clients; per-session ledgers must conserve.
-    std::vector<BenchResult> runs;
-    for (int i = 0; i < repetitions; ++i) {
-      const std::uint64_t seed = base_seed + static_cast<std::uint64_t>(i);
-      runs.push_back(run_rudp_arm("rudp-fanout", seed, loss, burst, clients,
-                                  true));
-      std::cout << "fanout seed=" << std::hex << seed << std::dec
-                << " fdr=" << runs.back().fdr_playout << "\n";
-    }
-    json << "  \"workload\": {\"clients\":" << clients
-         << ",\"fps\":30,\"frame_bytes\":12000,\"warmup\":100,\"measured\":"
-         << kMeasuredFrames << "},\n";
-    json << "  \"arms\":[\n";
-    append_json(json, runs);
-    json << "\n  ]\n}\n";
+    const std::string out_path = out_prefix + ".json";
+    std::ofstream out(out_path);
+    if (!out) throw std::runtime_error("cannot write " + out_path);
+    out << json.str();
+    out.flush();
+    if (!out) throw std::runtime_error("write error: " + out_path);
+    std::cout << "wrote " << out_path << "\n";
+    return 0;
+  } catch (const std::exception& e) {
+    std::cerr << "rudp_bench: " << e.what() << "\n";
+    return 1;
   }
-
-  const std::string out_path = out_prefix + ".json";
-  std::ofstream out(out_path);
-  if (!out) throw std::runtime_error("cannot write " + out_path);
-  out << json.str();
-  std::cout << "wrote " << out_path << "\n";
-  return 0;
 }

@@ -102,6 +102,10 @@ class VirtualNetwork {
     // Burst model: fixed-length bursts; the configured probability is the
     // TARGET AVERAGE loss rate, so the burst-start probability is
     // h = L / (len * (1 - L)) (Gilbert-type normalization; ADR-0012).
+    if (!is_control && fc.data_loss >= 1.0) {
+      stats_.dropped++;
+      return;
+    }
     if (!is_control && fc.burst_length > 1 && fc.data_loss > 0) {
       if (*fc.burst_left_ > 0) {
         (*fc.burst_left_)--;
@@ -272,6 +276,7 @@ class SimDriver {
 
   // Runs until `until` or quiescence; calls `tick` after each event batch.
   void run(MonoNs until, const std::function<void(SimDriver&)>& tick = nullptr) {
+    if (net_ == nullptr) return;
     MonoNs last_t = -1;
     while (clock_.now() < until) {
       MonoNs t = until;
@@ -350,7 +355,7 @@ class SimDriver {
   void set_heartbeat(MonoNs interval) { heartbeat_ = interval; }
 
   bool quiescent(MonoNs until) const {
-    if (net_->in_flight() > 0) return false;
+    if (net_ != nullptr && net_->in_flight() > 0) return false;
     for (const auto& p : participants_) {
       if (p.gateway) {
         if (auto d = p.gateway->next_deadline(); d && *d < until) return false;

@@ -44,32 +44,50 @@ EventLoop::EventLoop(int timer_capacity) : timers_(timer_capacity) {
   }
   timer_fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
   if (timer_fd_ < 0) {
+    const int err = errno;
+    close_fds();
     throw std::runtime_error(std::string("timerfd_create: ") +
-                             std::strerror(errno));
+                             std::strerror(err));
   }
   sigset_t mask;
   sigemptyset(&mask);
   sigaddset(&mask, SIGINT);
   sigaddset(&mask, SIGTERM);
   if (::pthread_sigmask(SIG_BLOCK, &mask, nullptr) != 0) {
+    close_fds();
     throw std::runtime_error("pthread_sigmask failed");
   }
   signal_fd_ = ::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
   if (signal_fd_ < 0) {
-    throw std::runtime_error(std::string("signalfd: ") + std::strerror(errno));
+    const int err = errno;
+    close_fds();
+    throw std::runtime_error(std::string("signalfd: ") + std::strerror(err));
   }
   if (epoll_ctl_add(epoll_fd_, timer_fd_, EPOLLIN) != 0 ||
       epoll_ctl_add(epoll_fd_, signal_fd_, EPOLLIN) != 0) {
+    const int err = errno;
+    close_fds();
     throw std::runtime_error(std::string("epoll_ctl: ") +
-                             std::strerror(errno));
+                             std::strerror(err));
   }
 }
 
-EventLoop::~EventLoop() {
-  if (timer_fd_ >= 0) ::close(timer_fd_);
-  if (signal_fd_ >= 0) ::close(signal_fd_);
-  if (epoll_fd_ >= 0) ::close(epoll_fd_);
+void EventLoop::close_fds() {
+  if (timer_fd_ >= 0) {
+    ::close(timer_fd_);
+    timer_fd_ = -1;
+  }
+  if (signal_fd_ >= 0) {
+    ::close(signal_fd_);
+    signal_fd_ = -1;
+  }
+  if (epoll_fd_ >= 0) {
+    ::close(epoll_fd_);
+    epoll_fd_ = -1;
+  }
 }
+
+EventLoop::~EventLoop() { close_fds(); }
 
 void EventLoop::watch_socket(INetwork& net, int fd) {
   net_ = &net;
@@ -97,6 +115,14 @@ void EventLoop::watch_fd(int fd, std::function<void()> on_readable) {
 }
 
 bool EventLoop::push_timer(TimerEntry e) { return timers_.push(std::move(e)); }
+
+bool EventLoop::replace_session_timer(TimerEntry e) {
+  return timers_.replace_session_timer(std::move(e));
+}
+
+void EventLoop::erase_session_timers(std::uint32_t session_id) {
+  timers_.erase_session(session_id);
+}
 
 void EventLoop::drain_socket(const std::function<void(Datagram&&)>& on_dg,
                              const std::function<void()>& on_too_large) {

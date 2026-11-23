@@ -31,7 +31,8 @@ class FaultProxy:
         self.events = []
         self.started = time.monotonic()
         self.stats = dict(data_attempts=0, data_dropped=0, retransmissions=0,
-                          datagram_bytes=0, queue_overflow=0, queue_high_water=0)
+                          datagram_bytes=0, queue_overflow=0, queue_high_water=0,
+                          send_would_block=0)
         self.burst_left = 0
         self.error = None
         self.stop = threading.Event()
@@ -63,7 +64,10 @@ class FaultProxy:
             now = time.monotonic()
             while self.pending and self.pending[0][0] <= now:
                 _, _, sock, peer, packet = heapq.heappop(self.pending)
-                sock.sendto(packet, peer)
+                try:
+                    sock.sendto(packet, peer)
+                except BlockingIOError:
+                    self.stats['send_would_block'] += 1
             timeout = min(0.01, max(0, self.pending[0][0] - now)) if self.pending else 0.01
             for key, _ in self.selector.select(timeout):
                 for _ in range(64):  # bounded receive turn
@@ -98,6 +102,8 @@ class FaultProxy:
                             drop = True
                         elif self.burst_left:
                             self.burst_left -= 1
+                            drop = True
+                        elif self.loss >= 1.0:
                             drop = True
                         elif self.loss:
                             probability = self.loss / (self.burst * (1-self.loss)) if self.burst > 1 else self.loss
@@ -216,7 +222,10 @@ def main():
     cases = [args.scenario] if args.scenario else ['no-loss','iid-5','burst-20-4','outage-400ms','fanout-3']
     results = [run_cell(args.build.resolve(), args.out.resolve(), name, 24301+i, args.duration)
                for name in cases for i in range(args.reps)]
-    commit = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+    try:
+        commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        commit = 'unknown'
     metadata = dict(schema_version=1, platform=platform.platform(), python=platform.python_version(),
                     source_commit=commit, clock='real monotonic', delay_ms=5, jitter_ms=2,
                     fault_scope='downstream DATA only; control delayed, not intentionally dropped',

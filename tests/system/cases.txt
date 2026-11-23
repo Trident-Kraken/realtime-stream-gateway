@@ -3,3 +3,4 @@ system_three_clients
 system_reconnect_after_sigterm
 system_sigterm_graceful
 system_unreachable_gateway
+system_cli_overrides_config_and_rejects_bad_args

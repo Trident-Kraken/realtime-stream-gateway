@@ -76,9 +76,19 @@ std::vector<Datagram> PlayoutPipeline::on_timer(MonoNs now) {
   return control;
 }
 
+void PlayoutPipeline::reset_session_state() {
+  assembler_.reset();
+  jitter_.reset();
+  terminal_ids_.clear();
+  anchor_set_ = false;
+  anchor_arrival_ = 0;
+  anchor_rtp_ts_ = 0;
+}
+
 void PlayoutPipeline::set_sync(std::uint32_t server_isn,
                                std::uint32_t session_epoch) {
   receiver_.set_sync(server_isn, session_epoch);
+  reset_session_state();
 }
 
 void PlayoutPipeline::set_nack_throttle(MonoNs srtt) {
@@ -87,7 +97,7 @@ void PlayoutPipeline::set_nack_throttle(MonoNs srtt) {
 
 void PlayoutPipeline::teardown() {
   receiver_.teardown();
-  anchor_set_ = false;
+  reset_session_state();
 }
 
 std::optional<MonoNs> PlayoutPipeline::next_deadline() const {
@@ -96,8 +106,8 @@ std::optional<MonoNs> PlayoutPipeline::next_deadline() const {
   if (auto t = jitter_.next_delivery_deadline()) {
     if (!best || *t < *best) best = *t;
   }
-  if (!best) {
-    best = receiver_.next_nack_deadline();
+  if (auto t = receiver_.next_nack_deadline()) {
+    if (!best || *t < *best) best = *t;
   }
   return best;
 }
@@ -108,6 +118,14 @@ std::vector<JitterBuffer::Delivery> PlayoutPipeline::take_deliveries() {
       std::make_move_iterator(pending_deliveries_.end()));
   pending_deliveries_.clear();
   return out;
+}
+
+std::uint64_t PlayoutPipeline::bytes_owned() const {
+  std::uint64_t queued = 0;
+  for (const auto& d : pending_deliveries_) {
+    queued += d.frame.bytes.size();
+  }
+  return assembler_.bytes_owned() + jitter_.bytes_owned() + queued;
 }
 
 void PlayoutPipeline::process_accepted(std::vector<AcceptedPacket>& accepted,

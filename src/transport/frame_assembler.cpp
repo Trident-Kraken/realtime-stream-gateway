@@ -17,6 +17,13 @@ void FrameAssembler::set_anchor(MonoNs arrival, std::uint32_t rtp_timestamp,
   playout_delay_ = playout_delay;
 }
 
+void FrameAssembler::reset() {
+  frames_.clear();
+  anchored_ = false;
+  anchor_arrival_ = 0;
+  anchor_rtp_ts_ = 0;
+}
+
 MonoNs FrameAssembler::playout_for(std::uint32_t rtp_timestamp) const {
   if (!anchored_) return INT64_MAX;
   return rtp_to_mono(anchor_arrival_, anchor_rtp_ts_, rtp_timestamp) +
@@ -30,6 +37,10 @@ FrameAssembler::RxFrame* FrameAssembler::find_frame(std::uint32_t frame_id) {
 
 DataClassification FrameAssembler::validate_descriptor(
     const AcceptedPacket& packet) {
+  if (packet.frame_count == 0 || packet.frame_count > 64u ||
+      packet.frame_index >= packet.frame_count) {
+    return DataClassification::PROTOCOL_VIOLATION;
+  }
   RxFrame* f = find_frame(packet.frame_id);
   if (f == nullptr) return DataClassification::VALID;  // unknown: create later
   if (f->dead) return DataClassification::DESCRIPTOR_CONFLICT;
@@ -44,13 +55,34 @@ DataClassification FrameAssembler::validate_descriptor(
 
 AssemblerOutput FrameAssembler::on_packet(AcceptedPacket&& packet) {
   AssemblerOutput out;
+  if (packet.frame_count == 0 || packet.frame_count > 64u ||
+      packet.frame_index >= packet.frame_count) {
+    return out;
+  }
   RxFrame* f = find_frame(packet.frame_id);
   if (f == nullptr) {
-    if (frames_.size() >= static_cast<std::size_t>(max_tracked_frames_)) {
+    if (!frames_.empty() &&
+        frames_.size() >= static_cast<std::size_t>(max_tracked_frames_)) {
       // Bounded frame table: expire the oldest incomplete frames (INV-12)
+      // using anchor-relative signed distance (UB-free for any frame_id set)
       // without invalidating the keys of remaining tracked frames.
-      while (frames_.size() >= static_cast<std::size_t>(max_tracked_frames_)) {
+      while (!frames_.empty() &&
+             frames_.size() >= static_cast<std::size_t>(max_tracked_frames_)) {
+        std::uint32_t anchor = frames_.begin()->first;
+        for (const auto& [k, v] : frames_) {
+          (void)v;
+          if (k < anchor) anchor = k;
+        }
         auto oldest = frames_.begin();
+        std::int32_t min_off = static_cast<std::int32_t>(oldest->first - anchor);
+        for (auto it = std::next(frames_.begin()); it != frames_.end(); ++it) {
+          const std::int32_t off =
+              static_cast<std::int32_t>(it->first - anchor);
+          if (off < min_off || (off == min_off && it->first < oldest->first)) {
+            min_off = off;
+            oldest = it;
+          }
+        }
         out.expired_frames.push_back(oldest->second.frame_id);
         frames_.erase(oldest);
       }
@@ -68,7 +100,7 @@ AssemblerOutput FrameAssembler::on_packet(AcceptedPacket&& packet) {
   }
   if (f->dead) return out;  // dead frames never assemble (INV-08)
 
-  const std::uint32_t bit = 1u << packet.frame_index;
+  const std::uint64_t bit = std::uint64_t{1} << packet.frame_index;
   if (f->received_mask & bit) return out;  // defensive duplicate
 
   f->received_mask |= bit;
@@ -118,11 +150,13 @@ AssemblerOutput FrameAssembler::on_timer(MonoNs now) {
       ++it;
     }
   }
+  std::sort(out.expired_frames.begin(), out.expired_frames.end());
   return out;
 }
 
 void FrameAssembler::on_abandon_ranges(const std::vector<AbandonRange>& ranges,
                                        std::vector<std::uint32_t>& dead_out) {
+  const std::size_t start_idx = dead_out.size();
   for (auto it = frames_.begin(); it != frames_.end();) {
     RxFrame& f = it->second;
     const std::uint32_t last_seq =
@@ -141,6 +175,8 @@ void FrameAssembler::on_abandon_ranges(const std::vector<AbandonRange>& ranges,
       ++it;
     }
   }
+  std::sort(dead_out.begin() + static_cast<std::ptrdiff_t>(start_idx),
+            dead_out.end());
 }
 
 void FrameAssembler::on_frame_dead(std::uint32_t frame_id) {
@@ -156,6 +192,17 @@ std::optional<MonoNs> FrameAssembler::next_expiry_deadline() const {
     if (!best || playout < *best) best = playout;
   }
   return best;
+}
+
+std::uint64_t FrameAssembler::bytes_owned() const {
+  std::uint64_t total = 0;
+  for (const auto& [key, f] : frames_) {
+    (void)key;
+    for (const auto& frag : f.fragments) {
+      total += frag.size();
+    }
+  }
+  return total;
 }
 
 }  // namespace rudp_rt

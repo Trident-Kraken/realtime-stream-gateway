@@ -5,10 +5,12 @@
 #include "rudp_rt/sim.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 
 #include <arpa/inet.h>
 #include <iostream>
@@ -26,6 +28,48 @@ std::string json_escape(const std::string& s) {
     out += c;
   }
   return out;
+}
+
+int parse_int_arg(const std::string& flag, const std::string& val) {
+  std::size_t used = 0;
+  const int v = std::stoi(val, &used, 10);
+  if (used != val.size()) {
+    throw std::invalid_argument("invalid integer for " + flag + ": '" + val + "'");
+  }
+  return v;
+}
+
+std::uint32_t parse_u32_arg(const std::string& flag, const std::string& val) {
+  if (val.empty() || val.front() == '-') {
+    throw std::invalid_argument("invalid uint32 for " + flag + ": '" + val + "'");
+  }
+  std::size_t used = 0;
+  const std::uint64_t v = std::stoull(val, &used, 10);
+  if (used != val.size() || v > 0xFFFFFFFFull) {
+    throw std::invalid_argument("invalid uint32 for " + flag + ": '" + val + "'");
+  }
+  return static_cast<std::uint32_t>(v);
+}
+
+std::uint64_t parse_u64_arg(const std::string& flag, const std::string& val) {
+  if (val.empty() || val.front() == '-') {
+    throw std::invalid_argument("invalid uint64 for " + flag + ": '" + val + "'");
+  }
+  std::size_t used = 0;
+  const std::uint64_t v = std::stoull(val, &used, 10);
+  if (used != val.size()) {
+    throw std::invalid_argument("invalid uint64 for " + flag + ": '" + val + "'");
+  }
+  return v;
+}
+
+double parse_double_arg(const std::string& flag, const std::string& val) {
+  std::size_t used = 0;
+  const double v = std::stod(val, &used);
+  if (used != val.size() || !std::isfinite(v)) {
+    throw std::invalid_argument("invalid float for " + flag + ": '" + val + "'");
+  }
+  return v;
 }
 
 }  // namespace
@@ -51,45 +95,63 @@ int main(int argc, char** argv) {
   std::string json_path;
   std::string trace_path;
 
-  for (int i = 1; i < argc; ++i) {
-    const std::string arg = argv[i];
-    auto next = [&]() -> std::string {
-      if (i + 1 >= argc) {
-        std::cerr << "missing value for " << arg << "\n";
-        std::exit(2);
+  try {
+    for (int i = 1; i < argc; ++i) {
+      const std::string arg = argv[i];
+      auto next = [&]() -> std::string {
+        if (i + 1 >= argc) {
+          throw std::invalid_argument("missing value for " + arg);
+        }
+        return argv[++i];
+      };
+      if (arg == "--scenario") scenario = next();
+      else if (arg == "--seed") seed = parse_seed(next());
+      else if (arg == "--loss") loss = parse_double_arg(arg, next());
+      else if (arg == "--burst") burst = parse_int_arg(arg, next());
+      else if (arg == "--down-loss") down_loss = parse_double_arg(arg, next());
+      else if (arg == "--down-burst") down_burst = parse_int_arg(arg, next());
+      else if (arg == "--control-loss") control_loss = parse_double_arg(arg, next());
+      else if (arg == "--delay") delay_ms = parse_double_arg(arg, next());
+      else if (arg == "--down-delay") down_delay_ms = parse_double_arg(arg, next());
+      else if (arg == "--jitter") jitter_ms = parse_double_arg(arg, next());
+      else if (arg == "--reorder") reorder = parse_double_arg(arg, next());
+      else if (arg == "--duplicate") duplicate = parse_double_arg(arg, next());
+      else if (arg == "--clients") clients = parse_int_arg(arg, next());
+      else if (arg == "--frames") frames = parse_u32_arg(arg, next());
+      else if (arg == "--warmup") warmup = parse_u32_arg(arg, next());
+      else if (arg == "--duration") duration_ms = parse_u64_arg(arg, next());
+      else if (arg == "--no-deadline") deadline_mode = false;
+      else if (arg == "--json") json_path = next();
+      else if (arg == "--trace") trace_path = next();
+      else if (arg == "--help") {
+        std::cout << "usage: rudp_sim [options]\n";
+        return 0;
+      } else {
+        std::cerr << "unknown argument: " << arg << "\n";
+        return 2;
       }
-      return argv[++i];
-    };
-    if (arg == "--scenario") scenario = next();
-    else if (arg == "--seed") seed = parse_seed(next());
-    else if (arg == "--loss") loss = std::stod(next());
-    else if (arg == "--burst") burst = std::stoi(next());
-    else if (arg == "--down-loss") down_loss = std::stod(next());
-    else if (arg == "--down-burst") down_burst = std::stoi(next());
-    else if (arg == "--control-loss") control_loss = std::stod(next());
-    else if (arg == "--delay") delay_ms = std::stod(next());
-    else if (arg == "--down-delay") down_delay_ms = std::stod(next());
-    else if (arg == "--jitter") jitter_ms = std::stod(next());
-    else if (arg == "--reorder") reorder = std::stod(next());
-    else if (arg == "--duplicate") duplicate = std::stod(next());
-    else if (arg == "--clients") clients = std::stoi(next());
-    else if (arg == "--frames") frames = static_cast<std::uint32_t>(std::stoul(next()));
-    else if (arg == "--warmup") warmup = static_cast<std::uint32_t>(std::stoul(next()));
-    else if (arg == "--duration") duration_ms = std::stoull(next());
-    else if (arg == "--no-deadline") deadline_mode = false;
-    else if (arg == "--json") json_path = next();
-    else if (arg == "--trace") trace_path = next();
-    else if (arg == "--help") {
-      std::cout << "usage: rudp_sim [options]\n";
-      return 0;
-    } else {
-      std::cerr << "unknown argument: " << arg << "\n";
-      return 2;
     }
+    if (down_loss < 0) down_loss = loss;
+    if (down_burst < 0) down_burst = burst;
+    if (down_delay_ms < 0) down_delay_ms = delay_ms;
+    auto check_prob = [](double p, const char* name) {
+      if (p < 0.0 || p > 1.0) {
+        throw std::invalid_argument(std::string(name) + " must be in [0, 1]");
+      }
+    };
+    check_prob(loss, "--loss");
+    check_prob(down_loss, "--down-loss");
+    check_prob(control_loss, "--control-loss");
+    check_prob(reorder, "--reorder");
+    check_prob(duplicate, "--duplicate");
+    if (burst < 0 || down_burst < 0 || delay_ms < 0.0 || down_delay_ms < 0.0 ||
+        jitter_ms < 0.0 || clients < 1 || clients > 16) {
+      throw std::invalid_argument("parameter out of range");
+    }
+  } catch (const std::exception& e) {
+    std::cerr << "rudp_sim: " << e.what() << "\n";
+    return 2;
   }
-  if (down_loss < 0) down_loss = loss;
-  if (down_burst < 0) down_burst = burst;
-  if (down_delay_ms < 0) down_delay_ms = delay_ms;
 
   rudp_rt::Config cfg;
   cfg.deadline_mode = deadline_mode;
@@ -273,7 +335,7 @@ int main(int argc, char** argv) {
     for (int i = 0; i < clients; ++i) {
       const auto& node = *cluster.clients[static_cast<std::size_t>(i)].node;
       c_abandons += node.counters_.abandons_received;
-      c_acks += node.counters_.acks_sent;
+      c_acks += node.counters_.acks_sent + node.receiver_counters().acks_sent;
     }
     json << "  \"packets\": {\"gw_data_sent\":" << g_data
          << ",\"gw_acks_received\":" << g_acks
@@ -306,6 +368,11 @@ int main(int argc, char** argv) {
   if (!json_path.empty()) {
     std::ofstream out(json_path);
     out << json.str();
+    out.flush();
+    if (!out) {
+      std::cerr << "rudp_sim: failed writing json to " << json_path << "\n";
+      return 1;
+    }
   }
   if (!trace_path.empty()) {
     // Replayable trace: scenario parameters + seed + outcomes (spec Phase 5).
@@ -313,6 +380,11 @@ int main(int argc, char** argv) {
     out << "# trace: re-run `rudp_sim` with identical parameters and seed to\n"
         << "# reproduce this record bit-for-bit (deterministic virtual clock).\n";
     out << json.str();
+    out.flush();
+    if (!out) {
+      std::cerr << "rudp_sim: failed writing trace to " << trace_path << "\n";
+      return 1;
+    }
   }
   std::cout << json.str();
   return invariants_ok ? 0 : 1;

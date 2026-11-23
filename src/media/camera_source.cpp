@@ -45,6 +45,8 @@ class V4l2Source final : public IFrameSource {
     v4l2_capability cap{};
     if (::ioctl(fd_, VIDIOC_QUERYCAP, &cap) != 0) {
       if (error) *error = std::string("VIDIOC_QUERYCAP: ") + std::strerror(errno);
+      ::close(fd_);
+      fd_ = -1;
       return false;
     }
     return true;
@@ -52,10 +54,20 @@ class V4l2Source final : public IFrameSource {
 
   std::optional<MediaFrame> next(MonoNs now) override {
     if (fd_ < 0 || failed_) return std::nullopt;
+    if (!started_) {
+      start_time_ = now;
+      started_ = true;
+    }
     const MonoNs capture = start_time_ + static_cast<MonoNs>(next_frame_) * interval_ns_;
     if (capture > now) return std::nullopt;
     std::vector<std::byte> bytes(kMaxMediaFragment);
-    const ssize_t n = ::read(fd_, bytes.data(), bytes.size());
+    ssize_t n = 0;
+    do {
+      n = ::read(fd_, bytes.data(), bytes.size());
+    } while (n < 0 && errno == EINTR);
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      return std::nullopt;
+    }
     if (n <= 0) {
       failed_ = true;  // device error: capture path disabled, protocol unaffected
       return std::nullopt;
@@ -81,6 +93,7 @@ class V4l2Source final : public IFrameSource {
   MonoNs start_time_ = 0;
   std::uint32_t next_frame_ = 0;
   int fd_ = -1;
+  bool started_ = false;
   bool failed_ = false;
 };
 

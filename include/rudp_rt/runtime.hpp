@@ -88,7 +88,6 @@ class SpscSnapshotQueue {
         if (!has_overflow_final_.load(std::memory_order_acquire)) {
           overflow_final_ = std::move(s);
           has_overflow_final_.store(true, std::memory_order_release);
-          dropped_non_final_.fetch_add(1, std::memory_order_relaxed);
           return true;
         }
         return false;  // overflow final slot already occupied
@@ -110,11 +109,12 @@ class SpscSnapshotQueue {
       // for the overflow final snapshot while preserving chronological order.
       for (std::size_t i = tail; i < head; ++i) {
         if (!items_[i % capacity_].is_final) {
-          if (i != tail) {
-            items_[i % capacity_] = std::move(items_[tail % capacity_]);
+          for (std::size_t j = i; j > tail; --j) {
+            items_[j % capacity_] = std::move(items_[(j - 1) % capacity_]);
           }
           ++tail;
           tail_.store(tail, std::memory_order_release);
+          dropped_non_final_.fetch_add(1, std::memory_order_relaxed);
           break;
         }
       }
@@ -124,8 +124,9 @@ class SpscSnapshotQueue {
       tail_.store(tail + 1, std::memory_order_release);
       return true;
     }
-    if (has_overflow_final_.exchange(false, std::memory_order_acquire)) {
+    if (has_overflow_final_.load(std::memory_order_acquire)) {
       out = std::move(overflow_final_);
+      has_overflow_final_.store(false, std::memory_order_release);
       return true;
     }
     return false;
@@ -228,7 +229,8 @@ class MetricsWorker {
   void start();
   void stop();
   void join();
-  bool final_acked() const { return final_acked_.load(); }
+  bool final_acked() const { return final_acked_.load(std::memory_order_acquire); }
+  bool failed() const { return failed_.load(std::memory_order_acquire); }
 
  private:
   void run();
@@ -237,6 +239,7 @@ class MetricsWorker {
   std::string output_path_;
   std::atomic<bool> stop_{false};
   std::atomic<bool> final_acked_{false};
+  std::atomic<bool> failed_{false};
   std::thread thread_;
 };
 
@@ -277,6 +280,7 @@ class Gateway final : private EventLoop::Delegate {
 
   MetricsSnapshot build_snapshot(bool final_snapshot);
   void drain_capture();
+  void rollback();
 
   Config cfg_;
   IClock& clock() { return *real_clock_; }
@@ -334,6 +338,7 @@ class Client final : private EventLoop::Delegate {
   bool finished() const override;
 
   MetricsSnapshot build_snapshot(bool final_snapshot);
+  void rollback();
 
   Config cfg_;
   Endpoint gateway_{};
@@ -346,6 +351,10 @@ class Client final : private EventLoop::Delegate {
   std::unique_ptr<MetricsWorker> metrics_;
   std::unique_ptr<EventFd> command_wake_;
   bool running_ = false;
+  MonoNs next_metrics_ = 0;
+  std::uint64_t reorder_hwm_ = 0;
+  std::uint64_t jitter_hwm_ = 0;
+  std::uint64_t mem_hwm_ = 0;
   std::optional<MonoNs> scan_deadline_;
   std::string metrics_path_ = "client_metrics.jsonl";
 };

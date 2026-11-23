@@ -17,6 +17,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace rudp_rt {
@@ -162,6 +163,7 @@ class FrameAssembler {
   // RTP timeline anchor: first valid packet after sync (spec §4.4).
   void set_anchor(MonoNs arrival, std::uint32_t rtp_timestamp,
                   MonoNs playout_delay);
+  void reset();
   bool anchored() const { return anchored_; }
 
   AssemblerOutput on_packet(AcceptedPacket&& packet);
@@ -178,6 +180,7 @@ class FrameAssembler {
 
   std::optional<MonoNs> next_expiry_deadline() const;
   std::size_t tracked_frames() const { return frames_.size(); }
+  std::uint64_t bytes_owned() const;
   MonoNs playout_for(std::uint32_t rtp_timestamp) const;
 
  private:
@@ -186,7 +189,7 @@ class FrameAssembler {
     std::uint32_t rtp_timestamp = 0;
     std::uint32_t first_seq = 0;   // derived: seq - index
     std::uint16_t frame_count = 0;
-    std::uint32_t received_mask = 0;   // bit per packet (count <= 64)
+    std::uint64_t received_mask = 0;   // bit per packet (count <= 64)
     std::uint16_t received_count = 0;
     std::uint16_t stream_id = 0;
     bool sync_start_seen = false;
@@ -194,12 +197,6 @@ class FrameAssembler {
     MonoNs first_arrival = INT64_MAX;
     MonoNs last_arrival = 0;
     std::vector<std::vector<std::byte>> fragments;  // per packet index
-  };
-
-  struct SerialFrameLess {
-    bool operator()(std::uint32_t a, std::uint32_t b) const {
-      return frame_lt(a, b);
-    }
   };
 
   RxFrame* find_frame(std::uint32_t frame_id);
@@ -210,7 +207,7 @@ class FrameAssembler {
   MonoNs anchor_arrival_ = 0;
   std::uint32_t anchor_rtp_ts_ = 0;
   MonoNs playout_delay_ = 0;
-  std::map<std::uint32_t, RxFrame, SerialFrameLess> frames_;  // serial order
+  std::unordered_map<std::uint32_t, RxFrame> frames_;
 };
 
 // ---------------------------------------------------------------------------
@@ -230,6 +227,7 @@ class JitterBuffer {
 
   void set_anchor(MonoNs arrival, std::uint32_t rtp_timestamp,
                   MonoNs playout_delay);
+  void reset();
   // Returns frames delivered immediately (completion after playout = LATE).
   std::vector<Delivery> push(CompletedFrame&& frame, MonoNs now);
   // Returns true when a pending entry existed for the frame.
@@ -237,6 +235,7 @@ class JitterBuffer {
   std::vector<Delivery> on_timer(MonoNs now);
   std::optional<MonoNs> next_delivery_deadline() const;
   std::size_t size() const { return pending_.size(); }
+  std::uint64_t bytes_owned() const;
   std::uint64_t dropped() const { return dropped_; }
 
  private:

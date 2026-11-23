@@ -93,18 +93,61 @@ class TokenBucket {
     rate_ = rate_bytes_per_sec;
     burst_ = burst_bytes;
     tokens_ = burst_bytes;
+    last_refill_ = -1;
+    rem_ns_ = 0;
   }
   void refill(MonoNs now) {
-    if (last_refill_ < 0) last_refill_ = now;
+    if (last_refill_ < 0) {
+      last_refill_ = now;
+      return;
+    }
     const MonoNs delta = now - last_refill_;
     if (delta <= 0) return;
     last_refill_ = now;
-    // rate (<= 2^31) * delta (capped) stays far inside int64.
-    const MonoNs capped = std::min<MonoNs>(delta, kNsPerSec * 3600);
-    const std::int64_t gained =
-        static_cast<std::int64_t>((static_cast<std::int64_t>(rate_) * capped) /
-                                  kNsPerSec);
-    tokens_ = std::min<std::int64_t>(burst_, tokens_ + gained);
+    if (rate_ <= 0 || burst_ <= 0 || tokens_ >= burst_) {
+      rem_ns_ = 0;
+      return;
+    }
+    constexpr std::uint64_t kNsPerSecU =
+        static_cast<std::uint64_t>(kNsPerSec);
+    const std::uint64_t udelta = static_cast<std::uint64_t>(delta);
+    const std::uint64_t urate = static_cast<std::uint64_t>(rate_);
+    const std::uint64_t uburst = static_cast<std::uint64_t>(burst_);
+    const std::uint64_t utokens =
+        tokens_ > 0 ? static_cast<std::uint64_t>(tokens_) : 0u;
+    const std::uint64_t need = uburst - utokens;  // >= 1
+
+    const std::uint64_t sec = udelta / kNsPerSecU;
+    const std::uint64_t ns = udelta % kNsPerSecU;
+
+    if (sec > 0 && urate > (need - 1u) / sec) {
+      tokens_ = burst_;
+      rem_ns_ = 0;
+      return;
+    }
+    std::uint64_t gained = sec * urate;  // < need
+
+    const std::uint64_t q = urate / kNsPerSecU;
+    const std::uint64_t r = urate % kNsPerSecU;    // < 1e9
+    const std::uint64_t rem_need = need - gained;  // >= 1
+    if (q > 0 && ns > (rem_need - 1u) / q) {
+      tokens_ = burst_;
+      rem_ns_ = 0;
+      return;
+    }
+    gained += q * ns;  // < need
+
+    // r < 1e9, ns < 1e9, rem_ns_ < 1e9 => max ~1e18 < UINT64_MAX.
+    const std::uint64_t frac = r * ns + rem_ns_;
+    const std::uint64_t frac_gained = frac / kNsPerSecU;
+    rem_ns_ = frac % kNsPerSecU;
+
+    if (frac_gained >= need - gained) {
+      tokens_ = burst_;
+      rem_ns_ = 0;
+    } else {
+      tokens_ = static_cast<std::int64_t>(utokens + gained + frac_gained);
+    }
   }
   bool try_take(std::int64_t bytes) {
     if (tokens_ >= bytes) {
@@ -120,6 +163,7 @@ class TokenBucket {
   std::int64_t burst_ = 1;
   std::int64_t tokens_ = 1;
   MonoNs last_refill_ = -1;
+  std::uint64_t rem_ns_ = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -274,6 +318,9 @@ class GatewayNode {
   void route_sender_output(Session& s);
   void pump_session(Session& s, INetwork& net, MonoNs now,
                     const std::function<int(Datagram&, Session*)>& send_one);
+  void pump_shutdown_control(
+      Session& s, MonoNs now,
+      const std::function<int(Datagram&, Session*)>& send_one);
   void check_session_liveness(Session& s, MonoNs now);
   void scan_session(Session& s, MonoNs now);
   bool control_rate_admit(const Endpoint& peer, MonoNs now);

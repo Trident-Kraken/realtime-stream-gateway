@@ -46,11 +46,11 @@ jobs:
           cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=address -DRUDP_WERROR=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           cmake --build build-asan -j$(nproc)
           python3 tools/check_sanitizer.py build-asan address
-          ctest --test-dir build-asan --output-on-failure -j1 -E "system\."
+          UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ctest --test-dir build-asan --output-on-failure -j1
 
       - name: Build & Test TSan
         run: |
           cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=thread -DRUDP_WERROR=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           cmake --build build-tsan -j$(nproc)
           python3 tools/check_sanitizer.py build-tsan thread
-          ctest --test-dir build-tsan --output-on-failure -j1 -R "unit|integration|fault"
+          ctest --test-dir build-tsan --output-on-failure -j1 -R "unit|integration|fault|system"

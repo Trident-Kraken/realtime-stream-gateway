@@ -19,6 +19,8 @@ void UdpReceiver::set_sync(std::uint32_t server_isn,
   hole_last_nack_.clear();
   abandon_ranges_.clear();
   dead_frames_.clear();
+  pending_control_.clear();
+  bytes_owned_ = 0;
 }
 
 void UdpReceiver::set_nack_throttle(MonoNs srtt) {
@@ -31,6 +33,7 @@ void UdpReceiver::teardown() {
   hole_last_nack_.clear();
   abandon_ranges_.clear();
   dead_frames_.clear();
+  pending_control_.clear();
   bytes_owned_ = 0;
 }
 
@@ -87,7 +90,9 @@ ControlOutput UdpReceiver::on_datagram(const Datagram& datagram, MonoNs now) {
     counters_.malformed++;
     return out;
   }
-  if (h.frame_count == 0 || h.frame_index >= h.frame_count) {
+  if (h.frame_count == 0 || h.frame_index >= h.frame_count ||
+      h.frame_count > static_cast<std::uint16_t>(cfg_.window_w) ||
+      h.frame_count > 64u) {
     counters_.protocol_violations++;
     return out;
   }
@@ -112,6 +117,10 @@ ControlOutput UdpReceiver::on_datagram(const Datagram& datagram, MonoNs now) {
   }
   if (!seq_lt(seq, recv_next_ + static_cast<std::uint32_t>(cfg_.window_w))) {
     counters_.out_of_window++;
+    return out;
+  }
+  if (seq_covered_by_abandon(seq)) {
+    counters_.dead_frame_drops++;
     return out;
   }
   if (storage_.count(seq) != 0) {
@@ -147,7 +156,8 @@ ControlOutput UdpReceiver::on_datagram(const Datagram& datagram, MonoNs now) {
     }
   }
 
-  if (static_cast<int>(storage_.size()) >= cfg_.reorder_capacity) {
+  if (seq != recv_next_ &&
+      static_cast<int>(storage_.size()) >= cfg_.reorder_capacity) {
     counters_.storage_full_drops++;  // drop newest unreported (D-12)
     return out;
   }
@@ -156,12 +166,14 @@ ControlOutput UdpReceiver::on_datagram(const Datagram& datagram, MonoNs now) {
   out.accepted.push_back(std::move(ap));
   counters_.data_received++;
 
-  advance_recv_next(now, out);
+  const bool moved = advance_recv_next(now, out);
   if (seq_gt(seq, recv_next_)) {
     // Out-of-order acceptance: per-hole NACKs, throttled (spec §4.5).
     enqueue_hole_nacks(seq, now, out.datagrams);
   }
-  enqueue_ack(out.datagrams);
+  if (!moved) {
+    enqueue_ack(out.datagrams);
+  }
   prune_hole_state();
   return out;
 }
@@ -221,10 +233,24 @@ std::optional<MonoNs> UdpReceiver::next_nack_deadline() const {
 void UdpReceiver::enqueue_ack(std::vector<Datagram>& out) {
   Ack ack;
   ack.ack_number = recv_next_ - 1;  // last cumulatively consumed (spec §4.4)
+  const std::uint32_t sack_base = seq_next(ack.ack_number);
   for (const auto& [seq, entry] : storage_) {
-    const std::uint64_t offset = seq_forward(seq_next(ack.ack_number), seq);
+    (void)entry;
+    const std::uint64_t offset = seq_forward(sack_base, seq);
     if (offset < 64) {
       ack.sack_bitmap |= (1ull << offset);
+    }
+  }
+  // Abandoned ranges above recv_next_ also prevent SACK bit reneging (INV-03).
+  for (const auto& r : abandon_ranges_) {
+    if (seq_lt(r.end, sack_base)) continue;
+    const std::uint32_t start = seq_lt(r.start, sack_base) ? sack_base : r.start;
+    const std::uint64_t off_start = seq_forward(sack_base, start);
+    if (off_start >= 64) continue;
+    const std::uint64_t off_end =
+        std::min<std::uint64_t>(63u, seq_forward(sack_base, r.end));
+    for (std::uint64_t bit = off_start; bit <= off_end; ++bit) {
+      ack.sack_bitmap |= (1ull << bit);
     }
   }
   ack.session_epoch = cfg_.session_epoch;
@@ -325,28 +351,47 @@ void UdpReceiver::enqueue_hole_nacks(std::uint32_t upto_seq_exclusive,
 AbandonResult UdpReceiver::apply_abandon(std::vector<AbandonRange> ranges,
                                          MonoNs now) {
   AbandonResult result;
-  ranges = normalize_abandon_ranges(std::move(ranges));
   ControlOutput out;  // reuse advance machinery
+  const std::uint32_t win = static_cast<std::uint32_t>(cfg_.window_w);
+  std::vector<AbandonRange> in_window;
 
+  // Validate every raw range against [recv_next_, recv_next_ + window_w)
+  // BEFORE sorting/normalizing (spec §4.5, strict weak ordering safety).
   for (const auto& r : ranges) {
-    // Validate against the receive window (spec §4.5).
-    if (!seq_lt(r.start, recv_next_ + static_cast<std::uint32_t>(cfg_.window_w))) {
+    const std::uint32_t len = r.end - r.start;
+    if (len >= 0x80000000u) {
       result.out_of_window_rejected = true;
-      counters_.protocol_violations++;  // out-of-window ABANDON (v0.2 §3.7)
+      counters_.protocol_violations++;  // inverted or antipodal span
       continue;
     }
-    if (seq_lt(r.end, recv_next_)) {
+    const std::uint32_t off_start = r.start - recv_next_;
+    const std::uint32_t off_end = r.end - recv_next_;
+    const bool start_behind = off_start > 0x80000000u;
+    const bool end_behind = off_end > 0x80000000u;
+    const bool start_in_win = off_start < win;
+    const bool end_in_win = off_end < win;
+    if (start_behind && end_behind && off_start <= off_end) {
       // Entirely below recv_next: already consumed; record nothing (the
       // fresh ACK below still confirms the sender's stub cleanup).
       result.applied = true;
       continue;
     }
+    if ((start_behind && end_in_win) ||
+        (start_in_win && end_in_win && off_start <= off_end)) {
+      AbandonRange clamped = r;
+      if (start_behind) clamped.start = recv_next_;
+      in_window.push_back(clamped);
+      result.applied = true;
+      continue;
+    }
+    result.out_of_window_rejected = true;
+    counters_.protocol_violations++;  // out-of-window ABANDON (v0.2 §3.7)
+  }
 
-    AbandonRange clamped = r;
-    if (seq_lt(clamped.start, recv_next_)) clamped.start = recv_next_;
+  in_window = normalize_abandon_ranges(std::move(in_window));
+  for (const auto& clamped : in_window) {
     abandon_ranges_.push_back(clamped);
     result.applied_ranges.push_back(clamped);
-    result.applied = true;
 
     // Flush covered storage entries; frames with held packets die.
     std::map<std::uint32_t, std::uint8_t> frames_hit;

@@ -33,6 +33,28 @@ bool TimerHeap::push(TimerEntry e) {
   return true;
 }
 
+bool TimerHeap::replace_session_timer(TimerEntry e) {
+  if (capacity_ <= 0) return false;
+  auto it = std::remove_if(heap_.begin(), heap_.end(),
+                           [&](const TimerEntry& cur) {
+                             return cur.session_id == e.session_id &&
+                                    cur.kind == e.kind;
+                           });
+  const bool removed = it != heap_.end();
+  if (!removed && static_cast<int>(heap_.size()) >= capacity_) {
+    return false;
+  }
+  heap_.erase(it, heap_.end());
+  e.insertion_id = ++insertion_counter_;
+  heap_.push_back(e);
+  std::make_heap(heap_.begin(), heap_.end(),
+                 [this](const TimerEntry& x, const TimerEntry& y) {
+                   return less(y, x);
+                 });
+  hwm_ = std::max<std::uint64_t>(hwm_, heap_.size());
+  return true;
+}
+
 std::optional<TimerEntry> TimerHeap::pop_due(MonoNs now) {
   if (heap_.empty() || heap_.front().deadline > now) return std::nullopt;
   std::pop_heap(heap_.begin(), heap_.end(),
@@ -55,6 +77,18 @@ void TimerHeap::invalidate_generation(std::uint32_t session_id,
                              [&](const TimerEntry& e) {
                                return e.session_id == session_id &&
                                       e.generation != gen;
+                             }),
+              heap_.end());
+  std::make_heap(heap_.begin(), heap_.end(),
+                 [this](const TimerEntry& x, const TimerEntry& y) {
+                   return less(y, x);
+                 });
+}
+
+void TimerHeap::erase_session(std::uint32_t session_id) {
+  heap_.erase(std::remove_if(heap_.begin(), heap_.end(),
+                             [session_id](const TimerEntry& e) {
+                               return e.session_id == session_id;
                              }),
               heap_.end());
   std::make_heap(heap_.begin(), heap_.end(),

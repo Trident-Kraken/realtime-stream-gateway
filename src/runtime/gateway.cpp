@@ -44,59 +44,83 @@ Gateway::~Gateway() {
   }
 }
 
-void Gateway::start() {
-  SocketNetwork::Options opts;
-  // Parse bind address (inet_pton writes network byte order into in_addr).
-  in_addr parsed{};
-  if (::inet_pton(AF_INET, cfg_.bind_address.c_str(), &parsed) != 1) {
-    throw std::runtime_error("invalid bind_address: " + cfg_.bind_address);
+void Gateway::rollback() {
+  if (capture_) {
+    capture_->stop();
+    capture_->join();
+    capture_.reset();
   }
-  opts.bind.ipv4_be = parsed.s_addr;
-  opts.bind.port_be = htons(cfg_.port);
-  opts.so_rcvbuf = cfg_.so_rcvbuf_request;
-  opts.so_sndbuf = cfg_.so_sndbuf_request;
-  opts.so_rcvbuf_min = cfg_.so_rcvbuf_min;
-  opts.so_sndbuf_min = cfg_.so_sndbuf_min;
-  net_ = std::make_unique<SocketNetwork>(opts);
+  if (metrics_) {
+    metrics_->stop();
+    metrics_->join();
+    metrics_.reset();
+  }
+  source_.reset();
+  command_wake_.reset();
+  capture_wake_.reset();
+  node_.reset();
+  net_.reset();
+  running_ = false;
+}
 
-  auto rng = [engine = std::make_shared<std::mt19937>(
-                  std::random_device{}())]() { return (*engine)(); };
-  node_ = std::make_unique<GatewayNode>(cfg_, *real_clock_, rng);
+void Gateway::start() {
+  try {
+    SocketNetwork::Options opts;
+    // Parse bind address (inet_pton writes network byte order into in_addr).
+    in_addr parsed{};
+    if (::inet_pton(AF_INET, cfg_.bind_address.c_str(), &parsed) != 1) {
+      throw std::runtime_error("invalid bind_address: " + cfg_.bind_address);
+    }
+    opts.bind.ipv4_be = parsed.s_addr;
+    opts.bind.port_be = htons(cfg_.port);
+    opts.so_rcvbuf = cfg_.so_rcvbuf_request;
+    opts.so_sndbuf = cfg_.so_sndbuf_request;
+    opts.so_rcvbuf_min = cfg_.so_rcvbuf_min;
+    opts.so_sndbuf_min = cfg_.so_sndbuf_min;
+    net_ = std::make_unique<SocketNetwork>(opts);
 
-  capture_wake_ = std::make_unique<EventFd>();
-  command_wake_ = std::make_unique<EventFd>();
+    auto rng = [engine = std::make_shared<std::mt19937>(
+                    std::random_device{}())]() { return (*engine)(); };
+    node_ = std::make_unique<GatewayNode>(cfg_, *real_clock_, rng);
 
-  loop_.watch_socket(*net_, net_->fd());
-  loop_.watch_stop_wake(*command_wake_);
-  // Capture work itself is drained in drain_input(); the wake only marks
-  // the queue non-empty.
-  loop_.watch_fd(capture_wake_->fd(), [this] { capture_wake_->drain(); });
+    capture_wake_ = std::make_unique<EventFd>();
+    command_wake_ = std::make_unique<EventFd>();
 
-  SyntheticSource::Params sp;
-  sp.stream_id = cfg_.stream_id;
-  sp.ssrc = cfg_.ssrc ? cfg_.ssrc : (0x5EED0000u ^ cfg_.stream_id);
-  sp.media_bytes = static_cast<std::uint32_t>(cfg_.frame_bytes);
-  sp.fps = cfg_.fps;
-  sp.deadline_budget = cfg_.deadline_budget;
-  sp.start_time = clock().now();
-  source_ = std::make_unique<SyntheticSource>(sp);
-  node_->set_keyframe_request_callback([this] {
-    if (source_) source_->request_keyframe();
-  });
+    loop_.watch_socket(*net_, net_->fd());
+    loop_.watch_stop_wake(*command_wake_);
+    // Capture work itself is drained in drain_input(); the wake only marks
+    // the queue non-empty.
+    loop_.watch_fd(capture_wake_->fd(), [this] { capture_wake_->drain(); });
 
-  metrics_ = std::make_unique<MetricsWorker>(snapshot_queue_, metrics_path_);
-  metrics_->start();
+    SyntheticSource::Params sp;
+    sp.stream_id = cfg_.stream_id;
+    sp.ssrc = cfg_.ssrc ? cfg_.ssrc : (0x5EED0000u ^ cfg_.stream_id);
+    sp.media_bytes = static_cast<std::uint32_t>(cfg_.frame_bytes);
+    sp.fps = cfg_.fps;
+    sp.deadline_budget = cfg_.deadline_budget;
+    sp.start_time = clock().now();
+    source_ = std::make_unique<SyntheticSource>(sp);
+    node_->set_keyframe_request_callback([this] {
+      if (source_) source_->request_keyframe();
+    });
 
-  // Capture drop accounting crosses threads through the documented atomic
-  // (spec §3.1); the EventLoop thread folds it into the source ledger at
-  // snapshot.
-  capture_ = std::make_unique<CaptureWorker>(
-      *source_, capture_queue_, *capture_wake_, clock(), [this] {
-        capture_dropped_atomic_.fetch_add(1, std::memory_order_relaxed);
-      });
-  capture_->start();
+    metrics_ = std::make_unique<MetricsWorker>(snapshot_queue_, metrics_path_);
+    metrics_->start();
 
-  running_ = true;
+    // Capture drop accounting crosses threads through the documented atomic
+    // (spec §3.1); the EventLoop thread folds it into the source ledger at
+    // snapshot.
+    capture_ = std::make_unique<CaptureWorker>(
+        *source_, capture_queue_, *capture_wake_, clock(), [this] {
+          capture_dropped_atomic_.fetch_add(1, std::memory_order_relaxed);
+        });
+    capture_->start();
+
+    running_ = true;
+  } catch (...) {
+    rollback();
+    throw;
+  }
 }
 
 MetricsSnapshot Gateway::run(MonoNs duration) {
@@ -111,6 +135,12 @@ MetricsSnapshot Gateway::run(MonoNs duration) {
     capture_->stop();
     capture_->join();
   }
+  MediaFrame leftover;
+  while (capture_queue_.try_pop(leftover)) {
+    capture_dropped_atomic_.fetch_add(1, std::memory_order_relaxed);
+  }
+  source_ledger_.fold_capture_drops(
+      capture_dropped_atomic_.load(std::memory_order_relaxed));
   // Final snapshot after all terminal classification (INV-18/INV-19).
   MetricsSnapshot final_snapshot = build_snapshot(true);
   snapshot_queue_.try_push(final_snapshot);  // copies; final never dropped
@@ -138,11 +168,13 @@ void Gateway::drain_input(MonoNs now) {
 void Gateway::on_timer(const TimerEntry& e, MonoNs now) {
   // Stage 3: due timers (SESSION_SCAN entries).
   if (e.kind == TimerKind::SESSION_SCAN && e.session_id != 0) {
-    node_->on_session_timer(e.session_id, e.generation, now);
     auto it = scan_armed_.find(e.session_id);
-    if (it != scan_armed_.end() && it->second.first == e.generation) {
-      scan_armed_.erase(it);
+    if (it == scan_armed_.end() || it->second.first != e.generation ||
+        it->second.second != e.deadline) {
+      return;  // stale or superseded scan entry (INV-14)
     }
+    scan_armed_.erase(it);
+    node_->on_session_timer(e.session_id, e.generation, now);
   }
 }
 
@@ -158,28 +190,40 @@ void Gateway::after_wake(MonoNs now) {
     next_metrics_ = now + cfg_.metrics_interval;
   }
 
-  // Re-arm per-session scan entries (ADR-0010).
-  for (const auto& [id, gen] : node_->live_sessions()) {
+  // Re-arm per-session scan entries cleanly without accumulating duplicates
+  // in TimerHeap (ADR-0010).
+  const auto live = node_->live_sessions();
+  for (auto it = scan_armed_.begin(); it != scan_armed_.end();) {
+    bool still_live = false;
+    for (const auto& [id, gen] : live) {
+      if (id == it->first && gen == it->second.first) {
+        still_live = true;
+        break;
+      }
+    }
+    if (!still_live) {
+      loop_.erase_session_timers(it->first);
+      it = scan_armed_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  for (const auto& [id, gen] : live) {
     const MonoNs deadline = node_->session_next_deadline(id);
     auto it = scan_armed_.find(id);
-    if (it == scan_armed_.end()) {
+    if (it == scan_armed_.end() || it->second.first != gen ||
+        deadline < it->second.second) {
       TimerEntry e;
       e.generation = gen;
       e.session_id = id;
       e.kind = TimerKind::SESSION_SCAN;
       e.deadline = deadline;
-      if (loop_.push_timer(e)) {
+      if (loop_.replace_session_timer(e)) {
         scan_armed_[id] = {gen, deadline};
       } else {
         resource_exhausted_++;
       }
-    } else if (deadline < it->second.second) {
-      TimerEntry e;
-      e.generation = gen;
-      e.session_id = id;
-      e.kind = TimerKind::SESSION_SCAN;
-      e.deadline = deadline;
-      if (loop_.push_timer(e)) it->second = {gen, deadline};
     }
   }
 }
@@ -218,8 +262,12 @@ void Gateway::drain_capture() {
   std::uint64_t popped = 0;
   while (capture_queue_.try_pop(frame)) {
     ++popped;
-    source_ledger_.admitted();
-    node_->offer_frame(std::move(frame), now);
+    if (draining_) {
+      capture_dropped_atomic_.fetch_add(1, std::memory_order_relaxed);
+    } else {
+      source_ledger_.admitted();
+      node_->offer_frame(std::move(frame), now);
+    }
   }
   capture_hwm_ = std::max<std::uint64_t>(capture_hwm_, popped);
   const std::uint64_t dropped =
@@ -241,6 +289,10 @@ MetricsSnapshot Gateway::build_snapshot(bool final_snapshot) {
   s.seed = 0;
   s.source = source_ledger_;
   s.packets = node_->counters();
+  s.sessions = node_->collect_sessions();
+  for (const auto& sm : s.sessions) {
+    s.packets += sm.packets;
+  }
   s.watchdog_violations = node_->watchdog_violations();
   s.resource_exhausted = node_->resource_exhausted() + resource_exhausted_;
   s.memory_high_water_bytes = mem_hwm_;
@@ -248,7 +300,6 @@ MetricsSnapshot Gateway::build_snapshot(bool final_snapshot) {
   s.queue_depth_hwm_control = static_cast<std::uint32_t>(node_->control_hwm());
   s.queue_depth_hwm_timer =
       static_cast<std::uint32_t>(loop_.timers().high_water());
-  s.sessions = node_->collect_sessions();
   return s;
 }
 

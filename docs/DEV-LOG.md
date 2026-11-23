@@ -248,3 +248,160 @@ scope: synthetic frames, source callback (not RTCP PLI), independent session
 accounting (derived source total), toolchain-local replay, modeled TCP and limited
 real-socket trial evidence. The design walkthrough records implementation tradeoffs and debugging cases.
 Current suite contains 86 cases; CI status is dynamic.
+
+## Batch 1 — CI/UBSan gate & P0 protocol/runtime fixes (2026-11-23)
+
+- **Command:** `cmake -S . -B build && cmake --build build -j$(nproc)`,
+  `cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=address -DRUDP_WERROR=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build-asan -j$(nproc)`,
+  `python3 tools/check_sanitizer.py build-asan address`,
+  `ctest --test-dir build --output-on-failure -j1`,
+  `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ctest --test-dir build-asan --output-on-failure -j1`,
+  `tools/replay_trace.sh docs/experiments/fault-storm.json /tmp/storm-replay.json`.
+- **Result:** 95/95 normal tests passed (25.33 s); 95/95 ASan+UBSan tests
+  (including `system.*` and 9 new regression cases) passed with fatal UBSan
+  (`-fno-sanitize-recover=undefined`, 81.68 s); `check_sanitizer.py` passed (40 TUs,
+  5 binaries); `fault-storm.json` replay matched bit-identically.
+- **Bug fixes:**
+  1. `CMakeLists.txt`, `tools/check_sanitizer.py`, `.github/workflows/ci.yml`:
+     made UBSan non-recoverable, added `undefined` mode support to
+     `check_sanitizer.py`, and included `system.*` tests in CI ASan/UBSan and
+     TSan runs.
+  2. `FrameAssembler` / `UdpReceiver`: widened `RxFrame::received_mask` to
+     `uint64_t` (fixing shift UB for 33–64 packet frames) and bounded
+     `frame_count <= min(window_w, 64)` before allocation.
+  3. `normalize_abandon_ranges` / `UdpReceiver::apply_abandon`: replaced cyclic
+     `seq_lt` sort with anchor-relative `int32_t` strict weak ordering and
+     validated both `r.start` and `r.end` against `[recv_next_, recv_next_ + W)`
+     before normalization.
+  4. `GatewayNode::teardown_session` / `pump` / `pump_shutdown_control`: cleared
+     `data_queue` and DATA `pending_out` on `SHUTDOWN`, and drained remaining
+     shutdown `ABANDON` control datagrams instead of stalling to `drain_deadline`.
+  5. `GatewayNode::route_sender_output`: purged closed/abandoned frames from
+     `s.data_queue` and `s.pending_out` (INV-07) and deduplicated/bounded
+     `s.data_queue` by `window_w` (INV-12).
+  6. `GatewayNode::pump_session`: debited `s.data_tokens` when emitting new DATA.
+  7. `TokenBucket::refill`: replaced overflowing `rate_ * capped` math with
+     overflow-free `uint64_t` quotient/remainder arithmetic and sub-token
+     nanosecond remainder retention (`rem_ns_`).
+- **Files:** `CMakeLists.txt`, `.github/workflows/ci.yml`,
+  `tools/check_sanitizer.py`, `include/rudp_rt/{receiver,session}.hpp`,
+  `src/codec/rudp_codec.cpp`, `src/transport/{frame_assembler,receiver}.cpp`,
+  `src/session/session_manager.cpp`,
+  `tests/unit/{cases.txt,core.cpp,queues.cpp,sender_receiver.cpp,net_faults.cpp}`,
+  `docs/DEV-LOG.md`.
+- **Unresolved:** Batch 2 (P1 protocol/concurrency fixes) and Batch 3
+  (runtime/config/observability/tooling fixes) remain queued.
+- **Next:** Proceed to Batch 2 when ready.
+
+## Batch 2 — Protocol state-machine, timer & concurrency fixes (2026-11-23)
+
+- **Command:** `cmake -S . -B build && cmake --build build -j$(nproc)`,
+  `cmake -S . -B build-asan && cmake --build build-asan -j$(nproc)`,
+  `python3 tools/check_sanitizer.py build-asan address`,
+  `ctest --test-dir build --output-on-failure -j1`,
+  `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ctest --test-dir build-asan --output-on-failure -j1`,
+  `./build/rudp_sim --loss 0.05 --burst 2 --delay 5 --jitter 4 --reorder 0.05 --duplicate 0.02 --seed 24301 --json /tmp/b2-storm.json && tools/replay_trace.sh /tmp/b2-storm.json /tmp/b2-storm-replay.json`.
+- **Result:** 111/111 normal tests passed (25.56 s, `-DRUDP_WERROR=ON`, 0
+  warnings); 111/111 ASan+UBSan tests passed with fatal UBSan (83.69 s, 16 new
+  regression tests added); `check_sanitizer.py` passed (40 TUs, 5 binaries);
+  `replay_trace.sh` reproduced `/tmp/b2-storm.json` bit-identically.
+- **Bug fixes:**
+  1. `FrameAssembler`: replaced `std::map<..., SerialFrameLess>` (non-transitive
+     on unconstrained modular IDs, bypassing INV-05 descriptor lookup) with
+     `std::unordered_map`, deterministic anchor-relative eviction, and sorted
+     expiry/abandon outputs.
+  2. `JitterBuffer::push`: removed `serial_rank` unsigned underflow and sorted
+     pending frames with `frame_lt`.
+  3. `PlayoutPipeline::next_deadline`: considered `receiver_.next_nack_deadline()`
+     even when assembler/jitter deadlines exist.
+  4. `PlayoutPipeline::{teardown,set_sync}`, `FrameAssembler::reset`,
+     `JitterBuffer::reset`, `UdpReceiver::{set_sync,teardown}`: cleared
+     half-assembled frames, jitter pending/dead queues, `terminal_ids_`, and
+     `pending_control_` across session resets.
+  5. `UdpReceiver`: eliminated double-ACK on in-order advance, dropped delayed
+     DATA inside `abandon_ranges_` (INV-08), allowed `seq == recv_next_` when
+     `storage_` is full, and preserved SACK bits over `abandon_ranges_` (INV-03).
+  6. `TransportSender`: skipped cumulatively-ACKed `seq < send_base_` packets in
+     retransmit/deadline/`all_held` scans and suppressed RTT sampling from
+     abandoned frame ACKs.
+  7. `TimerHeap` / `EventLoop` / `Gateway` / `Client`: added
+     `replace_session_timer` & `erase_session`, pruned dead sessions, and
+     matched `(generation, deadline)` on wake (`system_localhost_e2e` timer HWM
+     `<= 2`).
+  8. `SpscSnapshotQueue`: fixed `overflow_final_` acquire/release move ordering,
+     shifted ring entries chronologically on non-final eviction, and charged
+     `dropped_non_final_` only when a non-final item is evicted.
+  9. `ClientNode::pump` / `GatewayNode::{pump,pump_session,pump_shutdown_control}`:
+     preserved `pending_out_` / `node_pending_` on consecutive `WOULD_BLOCK`,
+     stopped returning `pending = true` on token exhaustion, and enforced
+     `turn_byte_limit` across all emission stages.
+  10. `Session` / `GatewayNode` / `ClientNode`: reset ACK-starvation baseline on
+      idle->active transition, updated `note_ack` only on valid ACKs, waited one
+      `keepalive_min_interval` after probe #N before timeout while purging stale
+      queued probes, and validated `PING`/`PONG` stream/purpose/epoch/status.
+- **Files:** `include/rudp_rt/{receiver,playout,event_loop,runtime}.hpp`,
+  `src/transport/{frame_assembler,jitter_buffer,playout_pipeline,receiver,sender}.cpp`,
+  `src/runtime/{timer_heap,event_loop,gateway,client}.cpp`,
+  `src/session/{session,session_manager}.cpp`,
+  `tests/unit/{cases.txt,queues.cpp,sender_receiver.cpp,net_faults.cpp}`,
+  `tests/system/process.cpp`, `docs/DEV-LOG.md`.
+- **Unresolved:** Batch 3 (runtime startup/shutdown transactions, config parsing,
+  snapshot aggregation/tooling) remains queued.
+- **Next:** Proceed to Batch 3 when ready.
+
+## Batch 3 — Runtime transactions, observability, config, CLI & tooling fixes (2026-11-23)
+
+- **Command:** `cmake -S . -B build && cmake --build build -j$(nproc)`,
+  `cmake -S . -B build-asan && cmake --build build-asan -j$(nproc)`,
+  `python3 tools/check_sanitizer.py build-asan address`,
+  `ctest --test-dir build --output-on-failure -j1`,
+  `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ctest --test-dir build-asan --output-on-failure -j1`,
+  `./build/rudp_sim --loss 0.05 --burst 2 --delay 5 --jitter 4 --reorder 0.05 --duplicate 0.02 --seed 24301 --json /tmp/b3-storm.json && tools/replay_trace.sh /tmp/b3-storm.json /tmp/b3-storm-replay.json`,
+  `./build/rudp_sim --no-deadline --loss 0.10 --seed 24301 --frames 100 --json /tmp/b3-nd.json && tools/replay_trace.sh /tmp/b3-nd.json /tmp/b3-nd-replay.json`.
+- **Result:** 118/118 normal tests passed (27.76 s, `-DRUDP_WERROR=ON`, 0
+  warnings); 118/118 ASan+UBSan tests passed with fatal UBSan (89.26 s, 7 new
+  unit/system regression tests added across Batch 3); `check_sanitizer.py`
+  passed (40 TUs, 5 binaries); both deadline-mode and `--no-deadline`
+  `replay_trace.sh` runs reproduced bit-identically.
+- **Bug fixes:**
+  1. `GatewayNode::handle_join`, `EventLoop`, `CaptureWorker`, `MetricsWorker`,
+     `Gateway`, `Client`: enforced `shutting_down_` join barrier, closed partial
+     fds on `EventLoop` constructor failures, caught worker exceptions and
+     stream write failures with `failed()` flags, eliminated duplicate `\n`
+     lines in JSONL output, added `Gateway`/`Client` `start()` rollback, and
+     folded post-stop leftover `capture_queue_` frames into capture drops.
+  2. `FrameAssembler`, `JitterBuffer`, `PlayoutPipeline`, `ClientNode`,
+     `Gateway`, `Client`, `rudp_sim`: implemented real `bytes_owned()` across
+     client assembly/jitter/delivery queues, folded session packet counters into
+     `Gateway::build_snapshot`, added `Client` delivery draining, periodic
+     snapshots, full HWMs, and `receiver_counters().acks_sent` aggregation in
+     `rudp_sim` and `Client::build_snapshot`.
+  3. `config.cpp`: rejected trailing junk, unclosed TOML quotes, NaN/Inf/negative/out-of-range
+     durations and uint16 fields, enabled TOML hex seeds via `parse_seed`, and
+     hardened `validate_config` (non-empty `bind_address`, `srtt_initial > 0`,
+     `rttvar_initial >= 0`, `control_reserve_bytes >= 64`, `int64_t` overflow
+     guards).
+  4. `apps/{gateway_main,client_main,sim_main,bench_main}.cpp`: applied CLI
+     overrides after `--config` load, added strict full-string numeric parsing
+     returning exit code `2` on invalid args plus output write checks, and
+     widened `UdpArmReceiver` bitmask to `uint64_t`.
+  5. `include/rudp_rt/sim.hpp` & `src/media/camera_source.cpp`: handled
+     `data_loss >= 1.0` cleanly before Gilbert burst normalization, guarded
+     unattached `SimDriver` null `net_`, closed `V4l2Source` fd on ioctl error,
+     and fixed first-call `start_time_` anchoring + `EINTR`/`EAGAIN` read
+     handling.
+  6. `tools/{replay_trace.sh,socket_experiment.py,summarize_experiments.py}`:
+     added `--no-deadline` support and `\0`-delimited `mapfile` argument passing
+     in `replay_trace.sh`, handled `BlockingIOError`, `loss >= 1.0` division by
+     zero, and missing `.git` fallback in `socket_experiment.py`, and guarded
+     zero-datagram / empty-row division in `summarize_experiments.py`.
+- **Files:** `include/rudp_rt/{receiver,playout,event_loop,runtime,sim}.hpp`,
+  `src/{session/session,session/session_manager,transport/frame_assembler,transport/jitter_buffer,transport/playout_pipeline,runtime/event_loop,runtime/reactor,runtime/gateway,runtime/client,runtime/config,media/camera_source}.cpp`,
+  `apps/{gateway_main,client_main,sim_main,bench_main}.cpp`,
+  `tools/{replay_trace.sh,socket_experiment.py,summarize_experiments.py}`,
+  `tests/unit/{cases.txt,core.cpp,queues.cpp,net_faults.cpp,sender_receiver.cpp}`,
+  `tests/system/{cases.txt,process.cpp}`, `docs/DEV-LOG.md`.
+- **Unresolved:** None from Batches 1–3; recorded reference artifacts under
+  `docs/experiments/` were intentionally preserved untouched (regenerate via
+  `tools/run_benchmarks.sh` / `tools/run_fault_matrix.sh` if updated reference
+  runs are desired).

@@ -5,9 +5,11 @@
 
 #include "rudp_rt/config.hpp"
 #include "rudp_rt/sender.hpp"
+#include "rudp_rt/sim.hpp"
 #include "rudp_rt/wire.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <set>
 #include <vector>
 
@@ -258,6 +260,125 @@ RUDP_TEST(seed_decimal_and_hexadecimal) {
   try { (void)parse_seed("24301suffix"); }
   catch (const std::exception&) { rejected = true; }
   RUDP_CHECK(rejected);
+}
+
+RUDP_TEST(abandon_range_normalization_cyclic_safe) {
+  // Wraparound adjacency across 2^32 merges cleanly.
+  auto wrapped = normalize_abandon_ranges({{2u, 5u}, {0xFFFFFFFEu, 1u}});
+  RUDP_CHECK_EQ(wrapped.size(), 1u);
+  RUDP_CHECK((wrapped[0] == AbandonRange{0xFFFFFFFEu, 5u}));
+
+  // Adversarial 3-cycle and antipodal pair must not cause std::sort UB.
+  auto tri = normalize_abandon_ranges(
+      {{0u, 1u}, {0x60000000u, 0x60000001u}, {0xC0000000u, 0xC0000001u}});
+  RUDP_CHECK_EQ(tri.size(), 3u);
+
+  auto antipodal = normalize_abandon_ranges(
+      {{0u, 1u}, {0x80000000u, 0x80000001u}});
+  RUDP_CHECK_EQ(antipodal.size(), 2u);
+
+  // Antipodal-span range (>= 2^31) is invalid and dropped.
+  auto huge = normalize_abandon_ranges({{0u, 0x80000000u}});
+  RUDP_CHECK(huge.empty());
+}
+
+RUDP_TEST(config_parsing_rejects_trailing_junk_overflow_and_bad_quotes) {
+  auto check_throws = [](auto&& fn) {
+    bool threw = false;
+    try {
+      fn();
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    RUDP_CHECK(threw);
+  };
+
+  for (const char* bad_dur :
+       {"", "1.2.3ms", "--5ms", "nan", "inf", "1e30s", "-5ms", "10years"}) {
+    check_throws([&] { (void)parse_duration(bad_dur); });
+  }
+
+  for (const char* bad_toml : {
+           "[gateway]\nport = 50000abc\n",
+           "[scheduling]\nturn_byte_limit = 100xyz\n",
+           "[gateway]\nport = 70000\n",
+           "[gateway]\nport = -1\n",
+           "[gateway]\nstream_id = 70000\n",
+           "[gateway]\nstream_id = -5\n",
+           "[gateway]\nbind_address = \"127.0.0.1\n",
+           "[experiment]\nseed = -1\n",
+           "[experiment]\nseed = 123abc\n",
+       }) {
+    check_throws([&] { (void)load_config_from_string(bad_toml); });
+  }
+
+  Config hex_cfg = load_config_from_string("[experiment]\nseed = 0x5EED\n");
+  RUDP_CHECK_EQ(hex_cfg.seed, 24301ull);
+
+  const Config base;
+  {
+    Config c = base;
+    c.control_reserve_bytes = -1;
+    RUDP_CHECK(!validate_config(c).empty());
+  }
+  {
+    Config c = base;
+    c.control_reserve_bytes = 32;  // < 64
+    RUDP_CHECK(!validate_config(c).empty());
+  }
+  {
+    Config c = base;
+    c.srtt_initial = 0;
+    RUDP_CHECK(!validate_config(c).empty());
+  }
+  {
+    Config c = base;
+    c.rttvar_initial = -1;
+    RUDP_CHECK(!validate_config(c).empty());
+  }
+  {
+    Config c = base;
+    c.bind_address.clear();
+    RUDP_CHECK(!validate_config(c).empty());
+  }
+  {
+    Config c = base;
+    c.media_payload_bytes = std::numeric_limits<int>::max();
+    c.max_frame_packets = 2;
+    RUDP_CHECK(!validate_config(c).empty());
+  }
+  {
+    Config c = base;
+    c.max_sessions = std::numeric_limits<int>::max();
+    RUDP_CHECK(!validate_config(c).empty());
+  }
+}
+
+RUDP_TEST(virtual_network_full_loss_with_large_burst_drops_all) {
+  VirtualClock clock;
+  VirtualNetwork net(clock, 12345);
+  const Endpoint src{1, 1};
+  const Endpoint dst{2, 2};
+  DirectionFaults df;
+  df.data_loss = 1.0;
+  df.burst_length = 200;
+  net.set_route(src, df);
+
+  for (int i = 0; i < 50; ++i) {
+    Datagram dg;
+    dg.peer = dst;
+    dg.bytes.assign(kHeaderSize, std::byte{0});
+    dg.bytes[0] = std::byte{kWireVersion};
+    dg.bytes[1] = static_cast<std::byte>(PacketType::DATA);
+    net.deliver_from(src, dg);
+  }
+  RUDP_CHECK_EQ(net.stats().dropped, 50u);
+  RUDP_CHECK_EQ(net.in_flight(), 0u);
+
+  // Unattached SimDriver must fail-safe without null-pointer dereference.
+  SimDriver detached(clock);
+  detached.run(ns_from_ms(10));
+  RUDP_CHECK(detached.quiescent(ns_from_ms(20)));
 }
 
 }  // namespace rudp_test

@@ -37,12 +37,14 @@ for name, label in [('bench-comparison', 'IID 5%'), ('bench-burst', 'Burst 20%, 
     loaded[name] = d
     for arm in d['arms']:
         rows = arm['runs']
+        if not rows:
+            continue
         for r in rows:
             assert r['offered'] == 10000 * arm['clients']
             assert r['ontime'] + r['late'] + r['expired'] + r['abandoned'] == r['offered']
         fdr = [r['fdr_playout'] for r in rows]
         session = mean(r['fdr_session'] for r in rows) if arm['arm'].startswith('rudp') else None
-        retx = mean(r['retransmitted_datagrams'] / r['data_datagrams'] for r in rows)
+        retx = mean((r['retransmitted_datagrams'] / r['data_datagrams'] if r['data_datagrams'] else 0.0) for r in rows)
         mb = mean(r['wire_bytes'] / 1e6 for r in rows)
         session_text = f'{session:.4f}' if session is not None else '—'
         lines.append(f"| {label} | {arm['arm']} | {mean(fdr):.4f} ± {(max(fdr)-min(fdr))/2:.4f} | {session_text} | {retx:.2%} | {mb:.2f} |")

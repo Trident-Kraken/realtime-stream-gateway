@@ -382,22 +382,37 @@ std::optional<Datagram> build_data_datagram(const Endpoint& peer,
 
 std::vector<AbandonRange> normalize_abandon_ranges(
     std::vector<AbandonRange> ranges) {
-  ranges.erase(std::remove_if(ranges.begin(), ranges.end(),
-                              [](const AbandonRange& r) {
-                                return seq_gt(r.start, r.end);
-                              }),
-               ranges.end());
+  ranges.erase(
+      std::remove_if(ranges.begin(), ranges.end(),
+                     [](const AbandonRange& r) {
+                       return static_cast<std::uint32_t>(r.end - r.start) >=
+                              0x80000000u;
+                     }),
+      ranges.end());
+  if (ranges.empty()) return {};
+  const std::uint32_t anchor = ranges.front().start;
   std::sort(ranges.begin(), ranges.end(),
-            [](const AbandonRange& a, const AbandonRange& b) {
-              return seq_lt(a.start, b.start);
+            [anchor](const AbandonRange& a, const AbandonRange& b) {
+              const auto ka = static_cast<std::int32_t>(a.start - anchor);
+              const auto kb = static_cast<std::int32_t>(b.start - anchor);
+              if (ka != kb) return ka < kb;
+              return static_cast<std::uint32_t>(a.end - a.start) <
+                     static_cast<std::uint32_t>(b.end - b.start);
             });
   std::vector<AbandonRange> out;
   for (const auto& r : ranges) {
     if (!out.empty()) {
       AbandonRange& last = out.back();
-      const std::uint32_t last_end_plus = seq_next(last.end);
-      if (!seq_lt(last_end_plus, r.start)) {
-        if (seq_gt(r.end, last.end)) last.end = r.end;
+      const std::uint64_t last_len =
+          static_cast<std::uint32_t>(last.end - last.start);
+      const std::uint64_t gap =
+          static_cast<std::uint32_t>(r.start - last.start);
+      if (gap <= last_len + 1ull) {
+        const std::uint64_t r_end_off =
+            gap + static_cast<std::uint32_t>(r.end - r.start);
+        if (r_end_off > last_len && r_end_off < 0x80000000ull) {
+          last.end = r.end;
+        }
         continue;
       }
     }

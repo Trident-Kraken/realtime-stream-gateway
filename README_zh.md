@@ -42,20 +42,20 @@ python3 tools/socket_experiment.py --scenario outage-400ms --reps 1 --out /tmp/r
 python3 tools/render_demo.py /tmp/gop.json --svg /tmp/gop.svg --replay
 ```
 
-当前 86 项 CTest 覆盖单元、属性、集成、故障、基准契约及真实 socket 场景。CI 校验实际编译插桩和运行库链接，并执行 ASan/UBSan、TSan；状态以顶部动态 CI 链接为准。
+当前 118 项 CTest 覆盖单元、属性、集成、故障、基准契约及真实 socket 场景。CI 校验实际编译插桩和运行库链接，并执行 ASan/UBSan、TSan；状态以顶部动态 CI 链接为准。
 
 ```bash
 cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=address \
   -DRUDP_WERROR=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build build-asan -j4
 python3 tools/check_sanitizer.py build-asan address
-ctest --test-dir build-asan --output-on-failure -E '^system\.' -j1
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ctest --test-dir build-asan --output-on-failure -j1
 
 cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=thread \
   -DRUDP_WERROR=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build build-tsan -j4
 python3 tools/check_sanitizer.py build-tsan thread
-ctest --test-dir build-tsan --output-on-failure -R '^(unit|integration|fault)\.' -j1
+ctest --test-dir build-tsan --output-on-failure -R '^(unit|integration|fault|system)\.' -j1
 ```
 
 ## 实验结果与边界

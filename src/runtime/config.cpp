@@ -3,8 +3,10 @@
 #include "rudp_rt/config.hpp"
 
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -30,9 +32,19 @@ MonoNs parse_duration(const std::string& text) {
     ++i;
   }
   if (i == 0) throw std::runtime_error("invalid duration: '" + text + "'");
-  const double value = std::stod(text.substr(0, i));
+  const std::string num = text.substr(0, i);
+  double value = 0.0;
+  std::size_t used = 0;
+  try {
+    value = std::stod(num, &used);
+  } catch (const std::exception&) {
+    throw std::runtime_error("invalid duration: '" + text + "'");
+  }
+  if (used != num.size() || !std::isfinite(value) || value < 0.0) {
+    throw std::runtime_error("invalid duration: '" + text + "'");
+  }
   const std::string unit = text.substr(i);
-  double ns = 0;
+  double ns = 0.0;
   if (unit == "ns") ns = value;
   else if (unit == "us") ns = value * 1e3;
   else if (unit == "ms") ns = value * 1e6;
@@ -41,6 +53,10 @@ MonoNs parse_duration(const std::string& text) {
   else if (unit == "h") ns = value * 3600e9;
   else if (unit.empty()) ns = value;
   else throw std::runtime_error("invalid duration unit: '" + text + "'");
+  // 2^63 is exact in IEEE-754 double; reject values >= 2^63 before MonoNs cast.
+  if (!std::isfinite(ns) || ns < 0.0 || ns >= 9223372036854775808.0) {
+    throw std::runtime_error("duration out of range: '" + text + "'");
+  }
   return static_cast<MonoNs>(ns);
 }
 
@@ -76,6 +92,10 @@ std::vector<KeyValue> parse_toml_subset(const std::string& text) {
         break;
       }
     }
+    if (in_quote) {
+      throw std::runtime_error("config line " + std::to_string(line_no) +
+                               ": unclosed quote");
+    }
     line = trim(line);
     if (line.empty()) continue;
     if (line.front() == '[') {
@@ -107,7 +127,10 @@ std::vector<KeyValue> parse_toml_subset(const std::string& text) {
 
 int parse_int(const KeyValue& kv) {
   try {
-    return std::stoi(kv.value);
+    std::size_t used = 0;
+    const int v = std::stoi(kv.value, &used);
+    if (used != kv.value.size()) throw std::runtime_error("trailing characters");
+    return v;
   } catch (const std::exception&) {
     throw std::runtime_error("config: " + kv.section + "." + kv.key +
                              ": expected integer, got '" + kv.value + "'");
@@ -115,11 +138,22 @@ int parse_int(const KeyValue& kv) {
 }
 std::int64_t parse_int64(const KeyValue& kv) {
   try {
-    return std::stoll(kv.value);
+    std::size_t used = 0;
+    const std::int64_t v = std::stoll(kv.value, &used);
+    if (used != kv.value.size()) throw std::runtime_error("trailing characters");
+    return v;
   } catch (const std::exception&) {
     throw std::runtime_error("config: " + kv.section + "." + kv.key +
                              ": expected integer, got '" + kv.value + "'");
   }
+}
+std::uint16_t parse_u16(const KeyValue& kv) {
+  const std::int64_t v = parse_int64(kv);
+  if (v < 0 || v > 65535) {
+    throw std::runtime_error("config: " + kv.section + "." + kv.key +
+                             ": out of uint16 range");
+  }
+  return static_cast<std::uint16_t>(v);
 }
 bool parse_bool(const KeyValue& kv) {
   if (kv.value == "true") return true;
@@ -143,8 +177,8 @@ Config load_config_from_string(const std::string& toml, Config base) {
     const std::string full = kv.section + "." + kv.key;
     if (kv.section == "gateway") {
       if (kv.key == "bind_address") cfg.bind_address = kv.value;
-      else if (kv.key == "port") cfg.port = static_cast<std::uint16_t>(parse_int(kv));
-      else if (kv.key == "stream_id") cfg.stream_id = static_cast<std::uint16_t>(parse_int(kv));
+      else if (kv.key == "port") cfg.port = parse_u16(kv);
+      else if (kv.key == "stream_id") cfg.stream_id = parse_u16(kv);
       else if (kv.key == "max_sessions") cfg.max_sessions = parse_int(kv);
       else throw std::runtime_error("unknown config key: " + full);
     } else if (kv.section == "media") {
@@ -199,8 +233,14 @@ Config load_config_from_string(const std::string& toml, Config base) {
       else if (kv.key == "metrics_interval") cfg.metrics_interval = parse_duration(kv.value);
       else throw std::runtime_error("unknown config key: " + full);
     } else if (kv.section == "experiment") {
-      if (kv.key == "seed") cfg.seed = static_cast<std::uint64_t>(parse_int64(kv));
-      else if (kv.key == "duration") cfg.sim_duration = parse_duration(kv.value);
+      if (kv.key == "seed") {
+        try {
+          cfg.seed = parse_seed(kv.value);
+        } catch (const std::exception&) {
+          throw std::runtime_error("config: " + full + ": invalid seed '" +
+                                   kv.value + "'");
+        }
+      } else if (kv.key == "duration") cfg.sim_duration = parse_duration(kv.value);
       else if (kv.key == "warmup_frames") cfg.warmup_frames = parse_u32(kv);
       else if (kv.key == "measured_frames") cfg.measured_frames = parse_u32(kv);
       else if (kv.key == "bench_clients") cfg.bench_clients = parse_int(kv);
@@ -227,6 +267,7 @@ std::vector<std::string> validate_config(const Config& cfg) {
     if (!ok) errors.push_back(msg);
   };
 
+  add(!cfg.bind_address.empty(), "bind_address must be non-empty");
   add(cfg.stream_id != 0, "stream_id must be non-zero");
   add(cfg.max_sessions >= 1, "max_sessions must be >= 1");
   add(cfg.window_w >= 1 && cfg.window_w <= 64, "window_w must be in [1, 64]");
@@ -234,11 +275,17 @@ std::vector<std::string> validate_config(const Config& cfg) {
       "max_frame_packets must be in [1, window_w]");
   add(cfg.media_payload_bytes >= 1 && cfg.media_payload_bytes <= 1200,
       "media_payload_bytes must be in [1, 1200]");
-  add(cfg.frame_bytes >= 1 && cfg.frame_bytes <= cfg.media_payload_bytes * cfg.max_frame_packets,
+  const std::int64_t max_frame_bytes =
+      static_cast<std::int64_t>(cfg.media_payload_bytes) *
+      static_cast<std::int64_t>(cfg.max_frame_packets);
+  add(cfg.frame_bytes >= 1 &&
+          static_cast<std::int64_t>(cfg.frame_bytes) <= max_frame_bytes,
       "frame_bytes must be <= media_payload_bytes * max_frame_packets");
   add(cfg.deadline_budget > 0, "deadline_budget must be > 0");
   add(cfg.rto_min > 0, "rto_min must be > 0");
   add(cfg.rto_max >= cfg.rto_min, "rto_max must be >= rto_min");
+  add(cfg.srtt_initial > 0, "srtt_initial must be > 0");
+  add(cfg.rttvar_initial >= 0, "rttvar_initial must be >= 0");
   add(cfg.playout_delay >= 0, "playout_delay must be >= 0");
   add(cfg.capture_queue_frames > 0, "capture_queue_frames must be > 0");
   add(cfg.control_queue_datagrams > 0, "control_queue_datagrams must be > 0");
@@ -247,9 +294,10 @@ std::vector<std::string> validate_config(const Config& cfg) {
   add(cfg.jitter_buffer_frames > 0, "jitter_buffer_frames must be > 0");
   add(cfg.reorder_buffer_packets > 0, "reorder_buffer_packets must be > 0");
   add(cfg.consumer_queue_frames > 0, "consumer_queue_frames must be > 0");
-  add(cfg.control_reserve_bytes <
-          static_cast<std::int64_t>(cfg.control_queue_datagrams) * 1240,
-      "control_reserve_bytes must be < control_queue_datagrams * 1240");
+  add(cfg.control_reserve_bytes >= 64 &&
+          cfg.control_reserve_bytes <
+              static_cast<std::int64_t>(cfg.control_queue_datagrams) * 1240,
+      "control_reserve_bytes must be in [64, control_queue_datagrams * 1240)");
   add(cfg.token_burst_bytes >= 1240,
       "token_burst_bytes must be >= one maximum datagram (1240)");
   add(cfg.token_rate_bytes_per_sec > 0, "token_rate_bytes_per_sec must be > 0");
@@ -270,7 +318,8 @@ std::vector<std::string> validate_config(const Config& cfg) {
       "socket buffer minimums must not exceed requests");
   add(cfg.drain_deadline > 0, "drain_deadline must be > 0");
   add(cfg.metrics_interval > 0, "metrics_interval must be > 0");
-  add(cfg.timer_capacity >= cfg.max_sessions * 8,
+  add(static_cast<std::int64_t>(cfg.timer_capacity) >=
+          static_cast<std::int64_t>(cfg.max_sessions) * 8,
       "timer_capacity must be >= max_sessions * 8");
   add(cfg.fps > 0 && cfg.fps <= 1000, "fps must be in (0, 1000]");
   return errors;

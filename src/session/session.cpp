@@ -149,14 +149,19 @@ void ClientNode::handle_data(const Datagram& dg, const Header& h, MonoNs now) {
   last_inbound_ = now;
 }
 
-void ClientNode::handle_ping(const Datagram& dg, const Header&, MonoNs now) {
+void ClientNode::handle_ping(const Datagram& dg, const Header& h, MonoNs now) {
+  if (h.stream_id != stream_id_) {
+    counters_.stream_mismatch++;
+    return;
+  }
   auto ping = decode_ping(payload_of(dg));
   if (ping.reject != RejectReason::NONE) {
     counters_.malformed++;
     return;
   }
   counters_.pings_received++;
-  if (!established()) {
+  if (!established() || ping.ping.purpose != PingPurpose::KEEPALIVE ||
+      ping.ping.session_epoch != session_epoch_) {
     counters_.stale_control++;
     return;
   }
@@ -165,7 +170,11 @@ void ClientNode::handle_ping(const Datagram& dg, const Header&, MonoNs now) {
   note_outbound(now);
 }
 
-void ClientNode::handle_pong(const Datagram& dg, const Header&, MonoNs now) {
+void ClientNode::handle_pong(const Datagram& dg, const Header& h, MonoNs now) {
+  if (h.stream_id != stream_id_) {
+    counters_.stream_mismatch++;
+    return;
+  }
   auto pong = decode_pong(payload_of(dg));
   if (pong.reject != RejectReason::NONE) {
     counters_.malformed++;
@@ -184,6 +193,7 @@ void ClientNode::handle_pong(const Datagram& dg, const Header&, MonoNs now) {
       last_probe_send_ = now;
       last_outbound_ = now;
       unanswered_probes_ = 0;
+      probe_nonce_ = 0;
     } else {
       rejects_received++;
       last_reject = p.status;  // retry continues on the join timer
@@ -192,10 +202,11 @@ void ClientNode::handle_pong(const Datagram& dg, const Header&, MonoNs now) {
   }
   if (state_ == State::ESTABLISHED && p.nonce == probe_nonce_ &&
       probe_nonce_ != 0) {
-    if (p.session_epoch != session_epoch_) {
+    if (p.session_epoch != session_epoch_ || p.status != PongStatus::OK) {
       counters_.stale_control++;
       return;
     }
+    probe_nonce_ = 0;
     unanswered_probes_ = 0;
     rtt_.sample(now - last_probe_send_);
     playout_.set_nack_throttle(rtt_.srtt());
@@ -236,6 +247,22 @@ void ClientNode::route_control(std::vector<Datagram> dgs) {
 
 void ClientNode::check_keepalive(MonoNs now) {
   if (!established()) return;
+  if (unanswered_probes_ >=
+      static_cast<std::uint32_t>(cfg_.keepalive_max_probes)) {
+    if (now - last_probe_send_ >= cfg_.keepalive_min_interval) {
+      // Session timeout on the client side after final probe window (spec §4.3).
+      playout_.teardown();
+      while (!control_.empty()) control_.pop();
+      pending_out_.reset();
+      probe_nonce_ = 0;
+      unanswered_probes_ = 0;
+      state_ = State::DOWN;
+      if (cfg_.auto_rejoin) {
+        start_join(now);
+      }
+    }
+    return;
+  }
   const MonoNs silence = now - last_outbound_;
   if (silence >= cfg_.keepalive_silence_after &&
       now - last_probe_send_ >= cfg_.keepalive_min_interval) {
@@ -258,15 +285,6 @@ void ClientNode::check_keepalive(MonoNs now) {
     if (!control_.push(std::move(dgp))) counters_.control_queue_dropped++;
     counters_.pings_sent++;
     note_outbound(now);
-  }
-  if (unanswered_probes_ >=
-      static_cast<std::uint32_t>(cfg_.keepalive_max_probes)) {
-    // Session timeout on the client side (spec §4.3).
-    playout_.teardown();
-    state_ = State::DOWN;
-    if (cfg_.auto_rejoin) {
-      start_join(clock_.now());
-    }
   }
 }
 
@@ -291,8 +309,13 @@ std::optional<MonoNs> ClientNode::next_deadline() const {
     consider(last_join_send_ + kJoinRetryInterval);
   }
   if (state_ == State::ESTABLISHED) {
-    consider(std::max(last_outbound_ + cfg_.keepalive_silence_after,
-                      last_probe_send_ + cfg_.keepalive_min_interval));
+    if (unanswered_probes_ >=
+        static_cast<std::uint32_t>(cfg_.keepalive_max_probes)) {
+      consider(last_probe_send_ + cfg_.keepalive_min_interval);
+    } else {
+      consider(std::max(last_outbound_ + cfg_.keepalive_silence_after,
+                        last_probe_send_ + cfg_.keepalive_min_interval));
+    }
     if (auto t = playout_.next_deadline()) consider(*t);
   }
   return best;
@@ -304,8 +327,8 @@ void ClientNode::note_outbound(MonoNs now) {
 
 bool ClientNode::pump(INetwork& net, MonoNs now) {
   tokens_.refill(now);
-  bool pending = false;
   std::int64_t count_left = cfg_.turn_datagram_limit;
+  std::int64_t bytes_left = cfg_.turn_byte_limit;
 
   auto send_one = [&](Datagram& dg) -> int {
     SendResult r = net.send(dg.peer, dg.bytes);
@@ -326,24 +349,30 @@ bool ClientNode::pump(INetwork& net, MonoNs now) {
   if (pending_out_) {
     Datagram dg = std::move(*pending_out_);
     pending_out_.reset();
-    if (send_one(dg) == 0) pending = true;
+    const std::int64_t sz = static_cast<std::int64_t>(dg.bytes.size());
+    const int r = send_one(dg);
+    if (r == 0) return true;  // keep pending_out_ intact; retry on EPOLLOUT
+    if (r == 1) {
+      count_left--;
+      bytes_left -= sz;
+    }
   }
-  while (!control_.empty() && count_left > 0) {
+  while (!control_.empty() && count_left > 0 && bytes_left > 0) {
     tokens_.refill(now);
     const Datagram& front = control_.front();
-    if (!tokens_.try_take(static_cast<std::int64_t>(front.bytes.size()))) {
-      pending = true;
-      break;
+    const std::int64_t sz = static_cast<std::int64_t>(front.bytes.size());
+    if (sz > bytes_left && count_left < cfg_.turn_datagram_limit) break;
+    if (!tokens_.try_take(sz)) {
+      break;  // token bucket empty; retry next wake without EPOLLOUT spin
     }
     Datagram dg = control_.pop();
     const int r = send_one(dg);
-    if (r != 1) {
-      pending = r == 0;
-      break;
-    }
+    if (r == 0) return true;
+    if (r < 0) break;
     count_left--;
+    bytes_left -= sz;
   }
-  return pending;
+  return static_cast<bool>(pending_out_);
 }
 
 std::vector<JitterBuffer::Delivery> ClientNode::take_deliveries() {
@@ -352,6 +381,8 @@ std::vector<JitterBuffer::Delivery> ClientNode::take_deliveries() {
 
 void ClientNode::shutdown(MonoNs) { torn_down_ = true; }
 
-std::uint64_t ClientNode::bytes_owned() const { return 0; }
+std::uint64_t ClientNode::bytes_owned() const {
+  return playout_.bytes_owned();
+}
 
 }  // namespace rudp_rt

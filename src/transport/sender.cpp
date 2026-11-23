@@ -165,7 +165,7 @@ void TransportSender::on_ack(const Ack& ack, MonoNs now) {
   // excludes retransmitted packets.
   if (ack.ack_number == seq_next(last_valid_ack_)) {
     TxFrame* f = find_frame_for_seq(ack.ack_number);
-    if (f != nullptr) {
+    if (f != nullptr && !f->abandoned) {
       for (const auto& p : f->packets) {
         if (p.seq == ack.ack_number) {
           if (p.retransmissions == 0 && p.first_send >= 0) {
@@ -275,7 +275,7 @@ void TransportSender::on_timer(MonoNs now) {
       // (no busy waiting) and cannot resurrect the frame (INV-07).
       bool all_held = true;
       for (const auto& p : f.packets) {
-        if (!p.sacked) {
+        if (!p.sacked && !seq_lt(p.seq, send_base_)) {
           all_held = false;
           break;
         }
@@ -292,7 +292,7 @@ void TransportSender::on_timer(MonoNs now) {
     }
 
     for (auto& p : f.packets) {
-      if (!p.in_flight || p.sacked) continue;
+      if (seq_lt(p.seq, send_base_) || !p.in_flight || p.sacked) continue;
       if (now - p.last_send >= effective_rto(p.retransmissions)) {
         retransmit_packet(f, p, now);
       }
@@ -406,7 +406,7 @@ std::optional<Datagram> TransportSender::emit_new_data(
   for (auto& f : frames_) {
     if (f.abandoned) continue;
     for (auto& p : f.packets) {
-      if (p.in_flight) continue;
+      if (p.in_flight || seq_lt(p.seq, send_base_)) continue;
       Datagram dg = build_data(f, p, false);
       if (static_cast<std::int64_t>(dg.bytes.size()) > byte_budget) {
         return std::nullopt;  // leave unsent; retry when tokens refill
@@ -436,7 +436,7 @@ std::optional<MonoNs> TransportSender::next_deadline() const {
     if (cfg_.deadline_mode) {
       bool all_held = true;
       for (const auto& p : f.packets) {
-        if (!p.sacked) {
+        if (!p.sacked && !seq_lt(p.seq, send_base_)) {
           all_held = false;
           break;
         }
@@ -445,7 +445,7 @@ std::optional<MonoNs> TransportSender::next_deadline() const {
                (all_held ? effective_rto(0) : 0));
     }
     for (const auto& p : f.packets) {
-      if (p.in_flight && !p.sacked) {
+      if (p.in_flight && !p.sacked && !seq_lt(p.seq, send_base_)) {
         consider(p.last_send + effective_rto(p.retransmissions));
       }
     }

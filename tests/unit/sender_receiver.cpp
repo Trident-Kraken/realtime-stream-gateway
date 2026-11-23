@@ -5,8 +5,10 @@
 #include "test_framework.hpp"
 
 #include "rudp_rt/clock.hpp"
+#include "rudp_rt/playout.hpp"
 #include "rudp_rt/receiver.hpp"
 #include "rudp_rt/sender.hpp"
+#include "rudp_rt/session.hpp"
 #include "rudp_rt/wire.hpp"
 
 namespace rudp_test {
@@ -529,6 +531,645 @@ RUDP_TEST(receiver_dead_frame_tombstone_wraparound) {
   RUDP_CHECK(rx.frame_dead(0xFFFFFFFFu));
   RUDP_CHECK(rx.frame_dead(0u));
   RUDP_CHECK(rx.frame_dead(1u));
+}
+
+RUDP_TEST(assembler_64_packet_frame_completes) {
+  VirtualClock clock;
+  ReceiverConfig rc;
+  rc.peer = Endpoint{1, 1};
+  rc.stream_id = 1;
+  rc.session_epoch = 7;
+  rc.isn = 2000;
+  rc.window_w = 64;
+  rc.reorder_capacity = 256;
+  UdpReceiver rx(rc, clock);
+  FrameAssembler assembler(64);
+  rx.set_descriptor_hooks(
+      [&](const AcceptedPacket& p) { return assembler.validate_descriptor(p); },
+      [&](std::uint32_t fid) { assembler.on_frame_dead(fid); });
+  rx.set_sync(2000, 7);
+
+  auto make_pkt = [&](std::uint16_t idx) {
+    Header h;
+    h.version = 1;
+    h.header_len = 7;
+    h.type = static_cast<std::uint8_t>(PacketType::DATA);
+    h.flags = idx == 63 ? kFlagFrameEnd : 0;
+    h.stream_id = 1;
+    h.seq = 2000u + idx;
+    h.frame_id = 10;
+    h.rtp_timestamp = 30000;
+    h.frame_index = idx;
+    h.frame_count = 64;
+    RtpHeader rtp;
+    rtp.timestamp = 30000;
+    rtp.marker = (idx == 63);
+    return *build_data_datagram(
+        Endpoint{1, 1}, h, rtp,
+        std::vector<std::byte>(16, static_cast<std::byte>(idx)));
+  };
+
+  std::vector<CompletedFrame> completed;
+  // Send index 32 first to verify bit 32 does not collide with bit 0.
+  auto out32 = rx.on_datagram(make_pkt(32), clock.now());
+  RUDP_CHECK_EQ(out32.accepted.size(), 1u);
+  AcceptedPacket dup32 = out32.accepted[0];
+  auto aout32 = assembler.on_packet(std::move(out32.accepted[0]));
+  RUDP_CHECK(aout32.completed.empty());
+  // Defensive duplicate at assembler level for bit 32 must be ignored cleanly.
+  auto aout32_dup = assembler.on_packet(std::move(dup32));
+  RUDP_CHECK(aout32_dup.completed.empty());
+
+  for (std::uint16_t idx = 0; idx < 64; ++idx) {
+    if (idx == 32) continue;
+    auto out = rx.on_datagram(make_pkt(idx), clock.now());
+    RUDP_CHECK_EQ(out.accepted.size(), 1u);
+    for (auto& ap : out.accepted) {
+      auto aout = assembler.on_packet(std::move(ap));
+      completed.insert(completed.end(),
+                       std::make_move_iterator(aout.completed.begin()),
+                       std::make_move_iterator(aout.completed.end()));
+    }
+  }
+  RUDP_CHECK_EQ(completed.size(), 1u);
+  RUDP_CHECK_EQ(completed[0].frame_id, 10u);
+  RUDP_CHECK_EQ(completed[0].bytes.size(), 64u * 16u);
+  RUDP_CHECK_EQ(rx.recv_next(), 2064u);
+}
+
+RUDP_TEST(receiver_rejects_oversized_frame_count) {
+  VirtualClock clock;
+  ReceiverConfig rc;
+  rc.peer = Endpoint{1, 1};
+  rc.stream_id = 1;
+  rc.session_epoch = 7;
+  rc.isn = 2000;
+  rc.window_w = 64;
+  UdpReceiver rx(rc, clock);
+  rx.set_sync(2000, 7);
+
+  auto send_bad = [&](std::uint32_t seq, std::uint32_t fid,
+                      std::uint16_t idx, std::uint16_t count) {
+    Header h;
+    h.version = 1;
+    h.header_len = 7;
+    h.type = static_cast<std::uint8_t>(PacketType::DATA);
+    h.flags = kFlagFrameEnd;
+    h.stream_id = 1;
+    h.seq = seq;
+    h.frame_id = fid;
+    h.rtp_timestamp = 3000;
+    h.frame_index = idx;
+    h.frame_count = count;
+    RtpHeader rtp;
+    rtp.timestamp = 3000;
+    rtp.marker = true;
+    auto dg = *build_data_datagram(Endpoint{1, 1}, h, rtp,
+                                   std::vector<std::byte>(16, std::byte{1}));
+    return rx.on_datagram(dg, clock.now());
+  };
+
+  const auto v0 = rx.counters().protocol_violations;
+  auto out1 = send_bad(2000, 1, 64, 65);
+  RUDP_CHECK(out1.accepted.empty());
+  RUDP_CHECK_EQ(rx.storage_size(), 0u);
+  auto out2 = send_bad(2001, 2, 65534, 65535);
+  RUDP_CHECK(out2.accepted.empty());
+  RUDP_CHECK_EQ(rx.storage_size(), 0u);
+  RUDP_CHECK_EQ(rx.counters().protocol_violations, v0 + 2u);
+}
+
+RUDP_TEST(receiver_abandon_rejects_unbounded_end_and_antipodal) {
+  VirtualClock clock;
+  ReceiverConfig rc;
+  rc.peer = Endpoint{1, 1};
+  rc.stream_id = 1;
+  rc.session_epoch = 7;
+  rc.isn = 1000;
+  rc.window_w = 64;
+  UdpReceiver rx(rc, clock);
+  rx.set_sync(1000, 7);
+
+  const auto check_rejected = [&](std::vector<AbandonRange> ranges) {
+    const auto v_before = rx.counters().protocol_violations;
+    const auto r = rx.apply_abandon(std::move(ranges), clock.now());
+    RUDP_CHECK(!r.applied);
+    RUDP_CHECK(r.out_of_window_rejected);
+    RUDP_CHECK_EQ(rx.recv_next(), 1000u);
+    RUDP_CHECK_GT(rx.counters().protocol_violations, v_before);
+  };
+
+  // Start inside window, end past recv_next + window_w: must be rejected first.
+  check_rejected({{1000u, 1200u}});
+  // Huge 2^31-1 span: must be rejected immediately without hanging.
+  check_rejected({{1000u, 1000u + 0x7FFFFFFEu}});
+  // Straddling behind recv_next with end past window_w.
+  check_rejected({{995u, 1100u}});
+  // Start inside window, end wraps past antipode.
+  check_rejected({{1000u + 63u, 1000u + 63u + 0x7FFFFFFFu}});
+  // Antipodal start (exactly 2^31 ahead).
+  check_rejected({{1000u + 0x80000000u, 1000u + 0x80000001u}});
+  // Inverted range (start > end).
+  check_rejected({{1005u, 1001u}});
+
+  // Valid straddling range behind recv_next and inside window is clamped/applied.
+  auto ok = rx.apply_abandon({{995u, 1005u}}, clock.now());
+  RUDP_CHECK(ok.applied);
+  RUDP_CHECK(!ok.out_of_window_rejected);
+  RUDP_CHECK_EQ(rx.recv_next(), 1006u);
+
+  // Valid wraparound at 2^32 boundary.
+  UdpReceiver wrap_rx(rc, clock);
+  wrap_rx.set_sync(0xFFFFFFFCu, 7);
+  auto wok = wrap_rx.apply_abandon({{0xFFFFFFFAu, 2u}}, clock.now());
+  RUDP_CHECK(wok.applied);
+  RUDP_CHECK(!wok.out_of_window_rejected);
+  RUDP_CHECK_EQ(wrap_rx.recv_next(), 3u);
+  const auto wv = wrap_rx.counters().protocol_violations;
+  auto wrej = wrap_rx.apply_abandon({{3u, 200u}}, clock.now());
+  RUDP_CHECK(!wrej.applied);
+  RUDP_CHECK(wrej.out_of_window_rejected);
+  RUDP_CHECK_EQ(wrap_rx.recv_next(), 3u);
+  RUDP_CHECK_GT(wrap_rx.counters().protocol_violations, wv);
+}
+
+RUDP_TEST(assembler_non_transitive_frame_ids_preserve_descriptor_check) {
+  auto make_pkt = [](std::uint32_t fid, std::uint16_t idx, std::uint16_t count,
+                     std::uint32_t rtp_ts) {
+    AcceptedPacket p;
+    p.frame_id = fid;
+    p.seq = fid * 2u + idx;
+    p.rtp_timestamp = rtp_ts;
+    p.stream_id = 1;
+    p.frame_index = idx;
+    p.frame_count = count;
+    p.frame_end = (idx + 1 == count);
+    p.media.assign(8, static_cast<std::byte>(fid & 0xFFu));
+    return p;
+  };
+
+  // Non-transitive modular frame_ids can cause RB-tree rotations that make an
+  // inserted frame unreachable by find_frame(), bypassing INV-05 conflict checks.
+  FrameAssembler asm_cycle(8);
+  const std::uint32_t ids[8] = {
+      0x60000000u, 0x00000000u, 0xA0000000u, 0x80000000u,
+      0xC0000000u, 0xB8000000u, 0xD0000000u, 0xD8000000u};
+  for (std::uint32_t fid : ids) {
+    AcceptedPacket p0 = make_pkt(fid, 0, 2, 9000);
+    RUDP_CHECK_EQ(static_cast<int>(asm_cycle.validate_descriptor(p0)),
+                  static_cast<int>(DataClassification::VALID));
+    RUDP_CHECK(asm_cycle.on_packet(std::move(p0)).expired_frames.empty());
+  }
+  RUDP_CHECK_EQ(asm_cycle.tracked_frames(), 8u);
+
+  for (std::uint32_t fid : ids) {
+    AcceptedPacket conflict_count = make_pkt(fid, 1, 3, 9000);
+    RUDP_CHECK_EQ(static_cast<int>(asm_cycle.validate_descriptor(conflict_count)),
+                  static_cast<int>(DataClassification::DESCRIPTOR_CONFLICT));
+    AcceptedPacket conflict_ts = make_pkt(fid, 1, 2, 9001);
+    RUDP_CHECK_EQ(static_cast<int>(asm_cycle.validate_descriptor(conflict_ts)),
+                  static_cast<int>(DataClassification::DESCRIPTOR_CONFLICT));
+  }
+
+  // Inserting a 9th frame evicts one frame cleanly without UB.
+  auto overflow_out = asm_cycle.on_packet(make_pkt(1u, 0, 2, 9000));
+  RUDP_CHECK_EQ(overflow_out.expired_frames.size(), 1u);
+  RUDP_CHECK_EQ(asm_cycle.tracked_frames(), 8u);
+
+  // Serial wraparound overflow evicts the true oldest (0xFFFFFFFEu).
+  FrameAssembler asm_wrap(4);
+  const std::uint32_t wrap_ids[4] = {0xFFFFFFFFu, 0xFFFFFFFEu, 0u, 1u};
+  for (std::uint32_t fid : wrap_ids) {
+    RUDP_CHECK(asm_wrap.on_packet(make_pkt(fid, 0, 2, 3000)).expired_frames.empty());
+  }
+  auto wrap_out = asm_wrap.on_packet(make_pkt(2u, 0, 2, 3000));
+  RUDP_CHECK_EQ(wrap_out.expired_frames.size(), 1u);
+  RUDP_CHECK_EQ(wrap_out.expired_frames[0], 0xFFFFFFFEu);
+  for (std::uint32_t fid : {0xFFFFFFFFu, 0u, 1u, 2u}) {
+    auto done = asm_wrap.on_packet(make_pkt(fid, 1, 2, 3000));
+    RUDP_CHECK_EQ(done.completed.size(), 1u);
+    RUDP_CHECK_EQ(done.completed[0].frame_id, fid);
+  }
+}
+
+RUDP_TEST(jitter_buffer_inserts_earlier_frame_ahead_of_later_frame) {
+  auto make_cf = [](std::uint32_t fid, std::uint32_t rtp_ts) {
+    CompletedFrame cf;
+    cf.stream_id = 1;
+    cf.frame_id = fid;
+    cf.rtp_timestamp = rtp_ts;
+    cf.frame_count = 1;
+    cf.bytes.assign(16, static_cast<std::byte>(fid & 0xFFu));
+    return cf;
+  };
+
+  JitterBuffer jb(4);
+  jb.set_anchor(0, 0, ns_from_ms(100));
+  RUDP_CHECK(jb.push(make_cf(1, 3000), ns_from_ms(10)).empty());
+  RUDP_CHECK(jb.push(make_cf(0, 0), ns_from_ms(20)).empty());
+  auto delivered = jb.on_timer(ns_from_ms(150));
+  RUDP_CHECK_EQ(delivered.size(), 2u);
+  RUDP_CHECK_EQ(delivered[0].frame.frame_id, 0u);
+  RUDP_CHECK_EQ(delivered[1].frame.frame_id, 1u);
+
+  // Overflow eviction must drop serial-oldest frame 1 when {2, 1, 3} arrive.
+  JitterBuffer jb2(2);
+  jb2.set_anchor(0, 0, ns_from_ms(200));
+  RUDP_CHECK(jb2.push(make_cf(2, 6000), ns_from_ms(10)).empty());
+  RUDP_CHECK(jb2.push(make_cf(1, 3000), ns_from_ms(15)).empty());
+  RUDP_CHECK(jb2.push(make_cf(3, 9000), ns_from_ms(20)).empty());
+  RUDP_CHECK_EQ(jb2.dropped(), 1u);
+  auto d2 = jb2.on_timer(ns_from_ms(350));
+  RUDP_CHECK_EQ(d2.size(), 2u);
+  RUDP_CHECK_EQ(d2[0].frame.frame_id, 2u);
+  RUDP_CHECK_EQ(d2[1].frame.frame_id, 3u);
+
+  // Wraparound: pushing 0 then 0xFFFFFFFFu orders 0xFFFFFFFFu before 0.
+  JitterBuffer jb_wrap(4);
+  jb_wrap.set_anchor(0, 0, ns_from_ms(200));
+  RUDP_CHECK(jb_wrap.push(make_cf(0u, 3000), ns_from_ms(10)).empty());
+  RUDP_CHECK(jb_wrap.push(make_cf(0xFFFFFFFFu, 0), ns_from_ms(20)).empty());
+  auto dw = jb_wrap.on_timer(ns_from_ms(250));
+  RUDP_CHECK_EQ(dw.size(), 2u);
+  RUDP_CHECK_EQ(dw[0].frame.frame_id, 0xFFFFFFFFu);
+  RUDP_CHECK_EQ(dw[1].frame.frame_id, 0u);
+}
+
+RUDP_TEST(playout_next_deadline_includes_earlier_nack_deadline) {
+  VirtualClock clock;
+  ReceiverConfig rc;
+  rc.peer = Endpoint{1, 1};
+  rc.stream_id = 1;
+  rc.session_epoch = 1;
+  rc.isn = 5000;
+  rc.window_w = 64;
+  rc.reorder_capacity = 256;
+  rc.nack_throttle_srtt = ns_from_ms(25);
+  PlayoutPipeline pipeline(rc, 128, 64, ns_from_ms(200), 64, clock);
+  pipeline.set_sync(5000, 1);
+
+  Header h;
+  h.version = 1;
+  h.header_len = 7;
+  h.type = static_cast<std::uint8_t>(PacketType::DATA);
+  h.flags = kFlagFrameEnd;
+  h.stream_id = 1;
+  h.seq = 5001;
+  h.frame_id = 0;
+  h.rtp_timestamp = 0;
+  h.frame_index = 1;
+  h.frame_count = 2;
+  RtpHeader rtp;
+  rtp.timestamp = 0;
+  rtp.marker = true;
+  auto dg = *build_data_datagram(Endpoint{1, 1}, h, rtp,
+                                 std::vector<std::byte>(32, std::byte{1}));
+
+  pipeline.on_data(dg, ns_from_ms(10));
+  const auto dl = pipeline.next_deadline();
+  RUDP_CHECK(dl.has_value());
+  RUDP_CHECK_EQ(*dl, ns_from_ms(35));
+}
+
+RUDP_TEST(playout_teardown_and_resync_clears_stale_frame_state) {
+  VirtualClock clock;
+  ReceiverConfig rc;
+  rc.peer = Endpoint{1, 1};
+  rc.stream_id = 1;
+  rc.session_epoch = 1;
+  rc.isn = 100;
+  rc.window_w = 64;
+  rc.reorder_capacity = 256;
+  rc.nack_throttle_srtt = ns_from_ms(25);
+  PlayoutPipeline pipeline(rc, 128, 64, ns_from_ms(100), 64, clock);
+  pipeline.set_sync(100, 1);
+
+  auto make_dg = [](std::uint32_t seq, std::uint32_t fid, std::uint16_t idx,
+                    std::uint16_t cnt, std::uint32_t rtp_ts) {
+    Header h;
+    h.version = 1;
+    h.header_len = 7;
+    h.type = static_cast<std::uint8_t>(PacketType::DATA);
+    h.flags = (idx + 1 == cnt) ? kFlagFrameEnd : 0;
+    h.stream_id = 1;
+    h.seq = seq;
+    h.frame_id = fid;
+    h.rtp_timestamp = rtp_ts;
+    h.frame_index = idx;
+    h.frame_count = cnt;
+    RtpHeader rtp;
+    rtp.timestamp = rtp_ts;
+    rtp.marker = (idx + 1 == cnt);
+    return *build_data_datagram(Endpoint{1, 1}, h, rtp,
+                                std::vector<std::byte>(24, std::byte{2}));
+  };
+
+  // Session 1: deliver frame 0 (enters terminal_ids_), half-assemble frame 1,
+  // and queue completed frame 2 in JitterBuffer.
+  pipeline.on_data(make_dg(100, 0, 0, 1, 0), ns_from_ms(10));
+  pipeline.on_timer(ns_from_ms(120));
+  auto d1 = pipeline.take_deliveries();
+  RUDP_CHECK_EQ(d1.size(), 1u);
+
+  pipeline.on_data(make_dg(101, 1, 0, 2, 3000), ns_from_ms(130));
+  pipeline.on_data(make_dg(103, 2, 0, 1, 9000), ns_from_ms(130));
+  RUDP_CHECK_EQ(pipeline.jitter_depth(), 1u);
+
+  pipeline.teardown();
+  pipeline.set_sync(500, 2);
+  RUDP_CHECK_EQ(pipeline.jitter_depth(), 0u);
+
+  // Session 2 reuses frame_ids 0 and 1 with fresh descriptors and timeline.
+  pipeline.on_data(make_dg(500, 0, 0, 1, 100000), ns_from_ms(200));
+  pipeline.on_data(make_dg(501, 1, 0, 1, 103000), ns_from_ms(200));
+  pipeline.on_timer(ns_from_ms(300));
+  pipeline.on_timer(ns_from_ms(334));
+  auto d2 = pipeline.take_deliveries();
+  RUDP_CHECK_EQ(pipeline.receiver_counters().protocol_violations, 0u);
+  RUDP_CHECK_EQ(d2.size(), 2u);
+  RUDP_CHECK(d2[0].ontime);
+  RUDP_CHECK(d2[1].ontime);
+  RUDP_CHECK_EQ(d2[0].frame.frame_id, 0u);
+  RUDP_CHECK_EQ(d2[0].frame.rtp_timestamp, 100000u);
+  RUDP_CHECK_EQ(d2[1].frame.frame_id, 1u);
+  RUDP_CHECK_EQ(d2[1].frame.rtp_timestamp, 103000u);
+}
+
+RUDP_TEST(receiver_single_ack_in_order_and_in_order_accepted_when_storage_full) {
+  VirtualClock clock;
+  ReceiverConfig rc;
+  rc.peer = Endpoint{1, 1};
+  rc.stream_id = 1;
+  rc.session_epoch = 7;
+  rc.isn = 5000;
+  rc.window_w = 64;
+  rc.reorder_capacity = 2;
+  rc.nack_throttle_srtt = ns_from_ms(25);
+  UdpReceiver rx(rc, clock);
+  rx.set_sync(5000, 7);
+
+  auto make_dg = [](std::uint32_t seq, std::uint32_t fid) {
+    Header h;
+    h.version = 1;
+    h.header_len = 7;
+    h.type = static_cast<std::uint8_t>(PacketType::DATA);
+    h.flags = kFlagFrameEnd;
+    h.stream_id = 1;
+    h.seq = seq;
+    h.frame_id = fid;
+    h.rtp_timestamp = fid * 3000;
+    h.frame_index = 0;
+    h.frame_count = 1;
+    RtpHeader rtp;
+    rtp.timestamp = h.rtp_timestamp;
+    rtp.marker = true;
+    return *build_data_datagram(Endpoint{1, 1}, h, rtp,
+                                std::vector<std::byte>(32, std::byte{3}));
+  };
+
+  // In-order packet must produce exactly 1 cumulative ACK, never 2.
+  auto out0 = rx.on_datagram(make_dg(5000, 0), clock.now());
+  RUDP_CHECK_EQ(out0.accepted.size(), 1u);
+  RUDP_CHECK_EQ(out0.datagrams.size(), 1u);
+  RUDP_CHECK_EQ(rx.counters().acks_sent, 1u);
+  RUDP_CHECK_EQ(rx.recv_next(), 5001u);
+
+  // Fill reorder storage (capacity 2) with out-of-order 5002 and 5003.
+  RUDP_CHECK_EQ(rx.on_datagram(make_dg(5002, 2), clock.now()).accepted.size(), 1u);
+  RUDP_CHECK_EQ(rx.on_datagram(make_dg(5003, 3), clock.now()).accepted.size(), 1u);
+  RUDP_CHECK_EQ(rx.storage_size(), 2u);
+
+  // Another out-of-order packet 5004 hits reorder_capacity drop.
+  auto out4 = rx.on_datagram(make_dg(5004, 4), clock.now());
+  RUDP_CHECK(out4.accepted.empty());
+  RUDP_CHECK_EQ(rx.counters().storage_full_drops, 1u);
+
+  // In-order gap filler (seq == recv_next_ == 5001) must still be accepted
+  // when storage_ is full so the head-of-line deadlock drains cleanly.
+  auto out1 = rx.on_datagram(make_dg(5001, 1), clock.now());
+  RUDP_CHECK_EQ(out1.accepted.size(), 1u);
+  RUDP_CHECK_EQ(rx.recv_next(), 5004u);
+  RUDP_CHECK_EQ(rx.storage_size(), 0u);
+  RUDP_CHECK_EQ(out1.datagrams.size(), 1u);
+}
+
+RUDP_TEST(receiver_abandoned_range_drops_delayed_data_and_preserves_sack_bits) {
+  VirtualClock clock;
+  ReceiverConfig rc;
+  rc.peer = Endpoint{1, 1};
+  rc.stream_id = 1;
+  rc.session_epoch = 7;
+  rc.isn = 5000;
+  rc.window_w = 64;
+  rc.reorder_capacity = 256;
+  rc.nack_throttle_srtt = ns_from_ms(25);
+  UdpReceiver rx(rc, clock);
+  rx.set_sync(5000, 7);
+
+  auto make_dg = [](std::uint32_t seq, std::uint32_t fid) {
+    Header h;
+    h.version = 1;
+    h.header_len = 7;
+    h.type = static_cast<std::uint8_t>(PacketType::DATA);
+    h.flags = kFlagFrameEnd;
+    h.stream_id = 1;
+    h.seq = seq;
+    h.frame_id = fid;
+    h.rtp_timestamp = fid * 3000;
+    h.frame_index = 0;
+    h.frame_count = 1;
+    RtpHeader rtp;
+    rtp.timestamp = h.rtp_timestamp;
+    rtp.marker = true;
+    return *build_data_datagram(Endpoint{1, 1}, h, rtp,
+                                std::vector<std::byte>(32, std::byte{4}));
+  };
+
+  auto extract_first_ack = [](const std::vector<Datagram>& dgs) {
+    for (const auto& dg : dgs) {
+      auto hdr = decode_header(dg.bytes);
+      RUDP_CHECK(hdr.reject == RejectReason::NONE);
+      if (static_cast<PacketType>(hdr.header.type) == PacketType::ACK) {
+        auto ack = decode_ack(
+            std::span<const std::byte>(dg.bytes).subspan(kHeaderSize));
+        RUDP_CHECK(ack.reject == RejectReason::NONE);
+        return ack.ack;
+      }
+    }
+    RUDP_CHECK(false);
+    return Ack{};
+  };
+
+  // Out-of-order seq 5005 creates hole at 5000..5004 and sets SACK bit 5.
+  auto out5 = rx.on_datagram(make_dg(5005, 5), clock.now());
+  Ack a1 = extract_first_ack(out5.datagrams);
+  RUDP_CHECK_EQ(a1.ack_number, 4999u);
+  RUDP_CHECK((a1.sack_bitmap & (1ull << 5)) != 0u);
+
+  // Abandon [5005, 5007] while 5000 is still missing (recv_next_ remains 5000):
+  // fresh ACK must NOT renege SACK bit 5 and must also cover [5005..5007].
+  auto ar = rx.apply_abandon({{5005u, 5007u}}, clock.now());
+  RUDP_CHECK(ar.applied);
+  RUDP_CHECK_EQ(rx.recv_next(), 5000u);
+  Ack a2 = extract_first_ack(ar.acks);
+  RUDP_CHECK_EQ(a2.ack_number, 4999u);
+  RUDP_CHECK((a2.sack_bitmap & (1ull << 5)) != 0u);
+  RUDP_CHECK((a2.sack_bitmap & (1ull << 6)) != 0u);
+  RUDP_CHECK((a2.sack_bitmap & (1ull << 7)) != 0u);
+
+  // Delayed DATA inside abandoned [5005, 5007] with unseen frame_id must drop
+  // before entering storage_ (INV-08).
+  const auto dead_before = rx.counters().dead_frame_drops;
+  auto out_delayed = rx.on_datagram(make_dg(5006, 99), clock.now());
+  RUDP_CHECK(out_delayed.accepted.empty());
+  RUDP_CHECK_EQ(rx.storage_size(), 0u);
+  RUDP_CHECK_EQ(rx.counters().dead_frame_drops, dead_before + 1u);
+}
+
+RUDP_TEST(sender_never_retransmits_cumulatively_acked_packets) {
+  SenderHarness h;
+  h.offer(0, 3000, ns_from_ms(500));
+  auto dgs = h.pump_new();
+  RUDP_CHECK_EQ(dgs.size(), 3u);  // seqs 1000, 1001, 1002
+
+  // Cumulatively ACK seq 1000; 1001 and 1002 remain in flight in the same frame.
+  h.clock.advance(ns_from_ms(10));
+  Ack ack1;
+  ack1.session_epoch = 55;
+  ack1.ack_number = 1000;
+  h.sender->on_ack(ack1, h.clock.now());
+
+  // Advance past RTO (~125ms) but before deadline (500ms): 1000 must NOT be
+  // retransmitted; only 1001 and 1002 are eligible.
+  h.clock.advance(ns_from_ms(300));  // now = 310ms
+  h.sender->on_timer(h.clock.now());
+  auto out = h.sender->take_output();
+  RUDP_CHECK_EQ(out.data.size(), 2u);
+  for (const auto& dg : out.data) {
+    auto dec = decode_header(dg.bytes);
+    RUDP_CHECK(dec.reject == RejectReason::NONE);
+    RUDP_CHECK(dec.header.seq != 1000u);
+  }
+
+  // SACK 1001 and 1002 while 1000 is cumulatively ACKed: ADR-0011 all_held
+  // 1-RTO grace must hold at exact deadline (500ms) instead of abandoning.
+  Ack ack2;
+  ack2.session_epoch = 55;
+  ack2.ack_number = 1000;
+  ack2.sack_bitmap = (1ull << 0) | (1ull << 1);  // seqs 1001, 1002
+  h.sender->on_ack(ack2, h.clock.now());
+  h.clock.set(ns_from_ms(500));
+  h.sender->on_timer(h.clock.now());
+  auto grace_out = h.sender->take_output();
+  RUDP_CHECK(grace_out.closures.empty());
+  const auto dl = h.sender->next_deadline();
+  RUDP_CHECK(dl.has_value());
+  RUDP_CHECK_GT(*dl, ns_from_ms(500));
+}
+
+RUDP_TEST(sender_no_rtt_sample_from_abandoned_frame_ack) {
+  SenderHarness h;
+  h.offer(0, 1000, ns_from_ms(40));
+  auto dgs = h.pump_new();
+  RUDP_CHECK_EQ(dgs.size(), 1u);
+
+  // Abandon frame 0 on deadline expiration.
+  h.clock.advance(ns_from_ms(50));
+  h.sender->on_timer(h.clock.now());
+  auto out = h.sender->take_output();
+  RUDP_CHECK_EQ(out.closures.size(), 1u);
+  RUDP_CHECK(out.closures[0].outcome == SessionFrameOutcome::ABANDONED);
+
+  // Cumulative ACK advancing across the abandoned stub must not sample RTT.
+  h.clock.advance(ns_from_ms(15));
+  Ack ack;
+  ack.session_epoch = 55;
+  ack.ack_number = 1000;
+  h.sender->on_ack(ack, h.clock.now());
+  RUDP_CHECK_EQ(h.sender->counters().rtt_samples, 0u);
+}
+
+RUDP_TEST(client_node_bytes_owned_tracks_assembly_jitter_and_deliveries) {
+  VirtualClock clock;
+  Config cfg;
+  cfg.playout_delay = ns_from_ms(100);
+  const Endpoint gw_ep{1u, 40000u};
+  ClientNode client(cfg, clock, gw_ep, 1, [] { return 19u; });
+
+  struct RecvNet final : INetwork {
+    std::vector<Datagram> sent;
+    SendResult send(const Endpoint& peer,
+                    std::span<const std::byte> bytes) override {
+      Datagram dg;
+      dg.peer = peer;
+      dg.bytes.assign(bytes.begin(), bytes.end());
+      sent.push_back(std::move(dg));
+      return {SendStatus::SENT};
+    }
+    RecvResult receive(std::span<std::byte>) override {
+      return {RecvStatus::WOULD_BLOCK, {}, 0};
+    }
+  } net;
+
+  clock.set(0);
+  client.start_join(0);
+  (void)client.pump(net, 0);
+  auto jping = decode_ping(
+      std::span<const std::byte>(net.sent[0].bytes).subspan(kHeaderSize));
+
+  Pong pong;
+  pong.nonce = jping.ping.nonce;
+  pong.status = PongStatus::OK;
+  pong.session_epoch = 55;
+  pong.server_isn = 1000;
+  Datagram pong_dg;
+  pong_dg.peer = gw_ep;
+  pong_dg.bytes.assign(kHeaderSize + encoded_pong_size(), std::byte{0});
+  Header ph;
+  ph.version = kWireVersion;
+  ph.header_len = kHeaderLenWords;
+  ph.type = static_cast<std::uint8_t>(PacketType::PONG);
+  ph.stream_id = 1;
+  ph.payload_len = static_cast<std::uint16_t>(encoded_pong_size());
+  encode_header(pong_dg.bytes.data(), ph);
+  encode_pong(pong_dg.bytes.data() + kHeaderSize, pong);
+  client.on_datagram(pong_dg, 0);
+  RUDP_CHECK(client.established());
+  RUDP_CHECK_EQ(client.bytes_owned(), 0u);
+
+  auto make_frag = [&](std::uint32_t seq, std::uint16_t idx, std::uint16_t cnt) {
+    Header h;
+    h.version = 1;
+    h.header_len = 7;
+    h.type = static_cast<std::uint8_t>(PacketType::DATA);
+    h.flags = (idx + 1 == cnt) ? kFlagFrameEnd : 0;
+    h.stream_id = 1;
+    h.seq = seq;
+    h.frame_id = 0;
+    h.rtp_timestamp = 0;
+    h.frame_index = idx;
+    h.frame_count = cnt;
+    RtpHeader rtp;
+    rtp.timestamp = 0;
+    rtp.marker = (idx + 1 == cnt);
+    return *build_data_datagram(gw_ep, h, rtp,
+                                std::vector<std::byte>(100, std::byte{0x5}));
+  };
+
+  clock.set(ns_from_ms(10));
+  client.on_datagram(make_frag(1000, 0, 2), clock.now());
+  RUDP_CHECK_EQ(client.bytes_owned(), 100u);  // in FrameAssembler
+
+  client.on_datagram(make_frag(1001, 1, 2), clock.now());
+  RUDP_CHECK_EQ(client.bytes_owned(), 200u);  // completed into JitterBuffer
+
+  clock.set(ns_from_ms(110));
+  client.on_timer(clock.now());
+  RUDP_CHECK_EQ(client.bytes_owned(), 200u);  // sitting in pending_deliveries_
+
+  auto deliveries = client.take_deliveries();
+  RUDP_CHECK_EQ(deliveries.size(), 1u);
+  RUDP_CHECK_EQ(client.bytes_owned(), 0u);    // drained by caller
 }
 
 }  // namespace rudp_test

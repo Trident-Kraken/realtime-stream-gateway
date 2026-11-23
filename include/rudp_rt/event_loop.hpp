@@ -52,6 +52,9 @@ class TimerHeap {
 
   // Returns false (and does not insert) when the heap is at capacity.
   bool push(TimerEntry e);
+  // Replaces any existing entry sharing (session_id, kind); returns false when
+  // no matching entry exists and the heap is already at capacity.
+  bool replace_session_timer(TimerEntry e);
   // Pops the earliest entry with deadline <= now; nullopt when none is due.
   std::optional<TimerEntry> pop_due(MonoNs now);
   std::optional<TimerEntry> peek() const;
@@ -60,6 +63,8 @@ class TimerHeap {
   std::uint64_t high_water() const { return hwm_; }
   // Drops entries whose generation does not match; used at session teardown.
   void invalidate_generation(std::uint32_t session_id, std::uint32_t gen);
+  // Drops all entries for a session.
+  void erase_session(std::uint32_t session_id);
 
  private:
   bool less(const TimerEntry& a, const TimerEntry& b) const;
@@ -130,6 +135,8 @@ class EventLoop {
 
   // Timer heap access (ADR-0010).
   bool push_timer(TimerEntry e);
+  bool replace_session_timer(TimerEntry e);
+  void erase_session_timers(std::uint32_t session_id);
   const TimerHeap& timers() const { return timers_; }
 
   // Drains the watched socket to EAGAIN (level-triggered, spec §3.2):
@@ -143,6 +150,7 @@ class EventLoop {
 
  private:
   void arm_timerfd(MonoNs now);
+  void close_fds();
 
   int epoll_fd_ = -1;
   int timer_fd_ = -1;
