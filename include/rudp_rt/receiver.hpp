@@ -26,14 +26,52 @@ namespace rudp_rt {
 // (first valid packet after sync, spec §4.4). Single definition of the
 // mapping; the assembler, the jitter buffer, and playout latency estimation
 // must all agree on it.
+inline MonoNs unwrapped_rtp_delta_to_ns(std::int64_t tick_delta) {
+  const std::int64_t secs =
+      tick_delta / static_cast<std::int64_t>(kRtpClockRate);
+  const std::int64_t rem =
+      tick_delta % static_cast<std::int64_t>(kRtpClockRate);
+  return secs * kNsPerSec +
+         (rem * kNsPerSec) / static_cast<std::int64_t>(kRtpClockRate);
+}
+
 inline MonoNs rtp_to_mono(MonoNs anchor_arrival, std::uint32_t anchor_rtp_ts,
                           std::uint32_t rtp_timestamp) {
   const std::int32_t delta =
       static_cast<std::int32_t>(rtp_timestamp - anchor_rtp_ts);
-  return anchor_arrival +
-         static_cast<MonoNs>(
-             (static_cast<std::int64_t>(delta) * kNsPerSec) / kRtpClockRate);
+  return anchor_arrival + unwrapped_rtp_delta_to_ns(static_cast<std::int64_t>(delta));
 }
+
+// Incremental 32->64-bit RTP timestamp unwrapper so continuous streams
+// exceeding 2^31 ticks (~6.63 hours at 90 kHz) do not suffer signed wrap.
+class RtpTimestampUnwrapper {
+ public:
+  void reset() {
+    has_last_ = false;
+    last_raw_ = 0;
+    unwrapped_ = 0;
+  }
+  std::int64_t peek_unwrap(std::uint32_t rtp_timestamp) const {
+    if (!has_last_) {
+      return static_cast<std::int64_t>(rtp_timestamp);
+    }
+    const std::int32_t delta =
+        static_cast<std::int32_t>(rtp_timestamp - last_raw_);
+    return unwrapped_ + static_cast<std::int64_t>(delta);
+  }
+  std::int64_t unwrap(std::uint32_t rtp_timestamp) {
+    const std::int64_t val = peek_unwrap(rtp_timestamp);
+    has_last_ = true;
+    last_raw_ = rtp_timestamp;
+    unwrapped_ = val;
+    return val;
+  }
+
+ private:
+  bool has_last_ = false;
+  std::uint32_t last_raw_ = 0;
+  std::int64_t unwrapped_ = 0;
+};
 
 struct ReceiverConfig {
   Endpoint peer;                 // control datagrams are sent here
@@ -188,6 +226,7 @@ class FrameAssembler {
   struct RxFrame {
     std::uint32_t frame_id = 0;
     std::uint32_t rtp_timestamp = 0;
+    std::int64_t unwrapped_rtp_ts = 0;
     std::uint32_t first_seq = 0;   // derived: seq - index
     std::uint16_t frame_count = 0;
     std::uint64_t received_mask = 0;   // bit per packet (count <= 64)
@@ -202,12 +241,15 @@ class FrameAssembler {
 
   RxFrame* find_frame(std::uint32_t frame_id);
   CompletedFrame complete_frame(RxFrame& f);
+  MonoNs playout_for_unwrapped(std::int64_t unwrapped_rtp) const;
 
   int max_tracked_frames_;
   bool anchored_ = false;
   MonoNs anchor_arrival_ = 0;
   std::uint32_t anchor_rtp_ts_ = 0;
+  std::int64_t anchor_unwrapped_rtp_ = 0;
   MonoNs playout_delay_ = 0;
+  RtpTimestampUnwrapper unwrapper_;
   std::unordered_map<std::uint32_t, RxFrame> frames_;
   std::deque<std::uint32_t> dead_ids_;
 };
@@ -253,7 +295,9 @@ class JitterBuffer {
   bool anchored_ = false;
   MonoNs anchor_arrival_ = 0;
   std::uint32_t anchor_rtp_ts_ = 0;
+  std::int64_t anchor_unwrapped_rtp_ = 0;
   MonoNs playout_delay_ = 0;
+  RtpTimestampUnwrapper unwrapper_;
   std::vector<Entry> pending_;  // kept sorted by serial frame order
   std::deque<std::uint32_t> dead_;
   std::uint64_t dropped_ = 0;

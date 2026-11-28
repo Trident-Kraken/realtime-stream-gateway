@@ -22,7 +22,7 @@ burst loss, fanout and equivalent hexadecimal/decimal seeds.
   [the socket report](experiments/socket/README.md).
 - The controlled GOP trace closes frames 0/1/2 as abandoned, prunes frame 3,
   and plays frames 4/5 on time. Its JSON replay is identical.
-- The current suite has 118 tests. The full local run passed in 27.76 seconds
+- The current suite has 122 tests. The full local run passed in 28.0 seconds
   (`-DRUDP_WERROR=ON`, 0 warnings).
 
 ## Sanitizers

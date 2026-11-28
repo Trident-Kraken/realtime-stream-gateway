@@ -9,6 +9,7 @@
 #include "rudp_rt/receiver.hpp"
 #include "rudp_rt/sender.hpp"
 #include "rudp_rt/session.hpp"
+#include "rudp_rt/sim.hpp"
 #include "rudp_rt/wire.hpp"
 
 namespace rudp_test {
@@ -1517,6 +1518,171 @@ RUDP_TEST(sender_preadmission_drop_and_mid_gop_join_request_keyframe_and_prune) 
     k23.bytes.assign(1200, std::byte{0x7});
     sender.on_frame(std::move(k23));
     RUDP_CHECK(sender.take_output().admissions[0].admitted);
+  }
+}
+
+RUDP_TEST(rtp_unwrapper_multi_wrap_and_token_pacing_deadlines) {
+  // 1) Continuous 90 kHz stream crossing 2^31 (~6.63h) and 2^32 (~13.26h)
+  //    wrap boundaries must deliver ONTIME without false expiry/late jumps.
+  {
+    VirtualClock clock;
+    ReceiverConfig rc;
+    rc.peer = Endpoint{1, 1};
+    rc.stream_id = 1;
+    rc.session_epoch = 9;
+    rc.isn = 1;
+    rc.window_w = 64;
+    rc.reorder_capacity = 256;
+    PlayoutPipeline pipeline(rc, 64, 64, ns_from_ms(60), 64, clock);
+    pipeline.record_latencies(true);
+    pipeline.set_sync(1, 9);
+
+    auto send_frame = [&](std::uint32_t seq, std::uint32_t fid,
+                          std::uint32_t rtp_ts, MonoNs arrival) {
+      Header h;
+      h.version = kWireVersion;
+      h.header_len = kHeaderLenWords;
+      h.type = static_cast<std::uint8_t>(PacketType::DATA);
+      h.flags = kFlagFrameEnd;
+      h.stream_id = 1;
+      h.seq = seq;
+      h.frame_id = fid;
+      h.rtp_timestamp = rtp_ts;
+      h.frame_count = 1;
+      RtpHeader rtp;
+      rtp.timestamp = rtp_ts;
+      rtp.marker = true;
+      auto dg = *build_data_datagram(
+          Endpoint{1, 1}, h, rtp, std::vector<std::byte>(16, std::byte{0x4}));
+      (void)pipeline.on_data(dg, arrival);
+    };
+
+    std::uint32_t seq = 1;
+    std::uint32_t fid = 0;
+    // Step in 2-hour increments up to 12 hours (crosses 2^31 at ~6.63h).
+    for (int step = 0; step <= 6; ++step) {
+      const std::int64_t ticks =
+          static_cast<std::int64_t>(step) * 2 * 3600 * kRtpClockRate;
+      const MonoNs arrival = unwrapped_rtp_delta_to_ns(ticks);
+      const std::uint32_t rtp_ts = static_cast<std::uint32_t>(ticks);
+      send_frame(seq++, fid++, rtp_ts, arrival);
+      pipeline.on_timer(arrival + ns_from_ms(60));
+      auto d = pipeline.take_deliveries();
+      RUDP_CHECK_EQ(d.size(), 1u);
+      RUDP_CHECK(d[0].ontime);
+    }
+
+    // Out-of-order frame pair strictly straddling the 32-bit 2^32 wrap (~13.26h):
+    // frame (fid+1) with wrapped rtp_ts=0x00000BB0 arrives before frame (fid)
+    // with pre-wrap rtp_ts=0xFFFFFFF0.
+    const std::int64_t t_pre = 0xFFFFFFF0LL;
+    const std::int64_t t_post = 0x100000BB0LL;  // t_pre + 3008 ticks
+    send_frame(seq + 1u, fid + 1u, static_cast<std::uint32_t>(t_post),
+               unwrapped_rtp_delta_to_ns(t_post));
+    send_frame(seq, fid, static_cast<std::uint32_t>(t_pre),
+               unwrapped_rtp_delta_to_ns(t_pre));
+    seq += 2u;
+    fid += 2u;
+    pipeline.on_timer(unwrapped_rtp_delta_to_ns(t_pre) + ns_from_ms(60));
+    auto d_pre = pipeline.take_deliveries();
+    RUDP_CHECK_EQ(d_pre.size(), 1u);
+    RUDP_CHECK_EQ(d_pre[0].frame.frame_id, fid - 2u);
+    RUDP_CHECK(d_pre[0].ontime);
+    pipeline.on_timer(unwrapped_rtp_delta_to_ns(t_post) + ns_from_ms(60));
+    auto d_post = pipeline.take_deliveries();
+    RUDP_CHECK_EQ(d_post.size(), 1u);
+    RUDP_CHECK_EQ(d_post[0].frame.frame_id, fid - 1u);
+    RUDP_CHECK(d_post[0].ontime);
+
+    // Continue cleanly past 14h and 16h after the 2^32 wrap.
+    for (int step = 7; step <= 8; ++step) {
+      const std::int64_t ticks =
+          static_cast<std::int64_t>(step) * 2 * 3600 * kRtpClockRate;
+      const MonoNs arrival = unwrapped_rtp_delta_to_ns(ticks);
+      const std::uint32_t rtp_ts = static_cast<std::uint32_t>(ticks);
+      send_frame(seq++, fid++, rtp_ts, arrival);
+      pipeline.on_timer(arrival + ns_from_ms(60));
+      auto d = pipeline.take_deliveries();
+      RUDP_CHECK_EQ(d.size(), 1u);
+      RUDP_CHECK(d[0].ontime);
+    }
+
+    RUDP_CHECK_EQ(pipeline.delivery_expired(), 0u);
+    RUDP_CHECK_EQ(pipeline.delivered_late(), 0u);
+    for (const MonoNs l : pipeline.latencies()) {
+      RUDP_CHECK_EQ(l, ns_from_ms(60));
+    }
+  }
+
+  // 2) GatewayNode pacing & turn_byte_limit truncation schedules exact wakeups
+  //    in SimDriver even with heartbeat_ == 0 (no artificial polling timer).
+  {
+    Config cfg;
+    cfg.window_w = 64;
+    cfg.max_frame_packets = 30;
+    cfg.frame_bytes = 30 * 1200;
+    cfg.media_payload_bytes = 1200;
+    cfg.turn_byte_limit = 16000;  // forces 3 turns for 30 x 1240 B packets
+    cfg.turn_datagram_limit = 64;
+    cfg.token_rate_bytes_per_sec = 4 * 1024 * 1024;
+    cfg.token_burst_bytes = 64 * 1024;
+
+    SimCluster cluster(cfg, 0x1234, 0x5678);
+    cluster.feed_enabled = false;
+    DirectionFaults clean;
+    clean.base_delay = ns_from_ms(5);
+    cluster.set_gateway_route(clean);
+    cluster.add_client(0x1234 + 1000);
+
+    cluster.run_for(ns_from_ms(20));
+    RUDP_CHECK(cluster.clients[0].node->established());
+
+    MediaFrame big;
+    big.stream_id = 1;
+    big.frame_id = 0;
+    big.capture_time = cluster.clock.now();
+    big.deadline_budget = ns_from_ms(100);
+    big.bytes.assign(30u * 1200u, std::byte{0x9});
+    cluster.gateway.offer_frame(std::move(big), cluster.clock.now());
+
+    // Heartbeat is disabled (0): completion relies purely on next_deadline().
+    cluster.run_for(ns_from_ms(100));
+    RUDP_CHECK_EQ(cluster.clients[0].node->delivered_ontime(), 1u);
+    cluster.shutdown_close();
+  }
+
+  // 3) Token-bucket refill deadline wakes at exact ready_at instant.
+  {
+    Config cfg;
+    cfg.window_w = 16;
+    cfg.max_frame_packets = 4;
+    cfg.frame_bytes = 3 * 1200;
+    cfg.media_payload_bytes = 1200;
+    cfg.token_burst_bytes = 2480;         // allows 2 datagrams initially
+    cfg.token_rate_bytes_per_sec = 2480;  // 3rd datagram ready at +500 ms
+    cfg.playout_delay = ns_from_ms(700);  // wait past the +500 ms paced arrival
+    cfg.deadline_budget = ns_from_ms(1000);
+
+    SimCluster cluster(cfg, 0x2222, 0x3333);
+    cluster.feed_enabled = false;
+    DirectionFaults clean;
+    clean.base_delay = ns_from_ms(5);
+    cluster.set_gateway_route(clean);
+    cluster.add_client(0x2222 + 1000);
+
+    cluster.run_for(ns_from_ms(20));
+    MediaFrame f;
+    f.stream_id = 1;
+    f.frame_id = 0;
+    f.capture_time = cluster.clock.now();
+    f.deadline_budget = cfg.deadline_budget;
+    f.bytes.assign(3u * 1200u, std::byte{0xA});
+    cluster.gateway.offer_frame(std::move(f), cluster.clock.now());
+
+    // Paced 3rd packet arrives at ~525 ms and plays out ontime at ~725 ms.
+    cluster.run_for(ns_from_ms(800));
+    RUDP_CHECK_EQ(cluster.clients[0].node->delivered_ontime(), 1u);
+    cluster.shutdown_close();
   }
 }
 

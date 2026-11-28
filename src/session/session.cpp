@@ -309,6 +309,13 @@ std::optional<MonoNs> ClientNode::next_deadline() const {
   const auto consider = [&best](MonoNs t) {
     if (!best || t < *best) best = t;
   };
+  if (!pending_out_ && !control_.empty()) {
+    if (auto t = tokens_.ready_at(
+            clock_.now(),
+            static_cast<std::int64_t>(control_.front().bytes.size()))) {
+      consider(*t);
+    }
+  }
   if (state_ == State::JOINING) {
     consider(last_join_send_ + kJoinRetryInterval);
   }

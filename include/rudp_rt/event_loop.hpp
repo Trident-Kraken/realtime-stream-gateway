@@ -4,7 +4,7 @@
 // signalfd, and the timer heap (ADR-0010), and drives one Delegate through
 // the fixed stage order of every wake:
 //
-//   wait (epoll) -> due timers -> drain_input -> pump
+//   wait (epoll) -> drain_input -> due timers -> pump
 //     -> EPOLLOUT follows pending output -> after_wake
 //
 // The Delegate owns policy (what to drain, which counters to bump, when the

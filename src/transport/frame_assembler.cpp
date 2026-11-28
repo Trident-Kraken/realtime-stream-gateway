@@ -15,6 +15,8 @@ void FrameAssembler::set_anchor(MonoNs arrival, std::uint32_t rtp_timestamp,
   anchor_arrival_ = arrival;
   anchor_rtp_ts_ = rtp_timestamp;
   playout_delay_ = playout_delay;
+  unwrapper_.reset();
+  anchor_unwrapped_rtp_ = unwrapper_.unwrap(rtp_timestamp);
 }
 
 void FrameAssembler::reset() {
@@ -23,12 +25,20 @@ void FrameAssembler::reset() {
   anchored_ = false;
   anchor_arrival_ = 0;
   anchor_rtp_ts_ = 0;
+  anchor_unwrapped_rtp_ = 0;
+  unwrapper_.reset();
+}
+
+MonoNs FrameAssembler::playout_for_unwrapped(std::int64_t unwrapped_rtp) const {
+  if (!anchored_) return INT64_MAX;
+  return anchor_arrival_ +
+         unwrapped_rtp_delta_to_ns(unwrapped_rtp - anchor_unwrapped_rtp_) +
+         playout_delay_;
 }
 
 MonoNs FrameAssembler::playout_for(std::uint32_t rtp_timestamp) const {
   if (!anchored_) return INT64_MAX;
-  return rtp_to_mono(anchor_arrival_, anchor_rtp_ts_, rtp_timestamp) +
-         playout_delay_;
+  return playout_for_unwrapped(unwrapper_.peek_unwrap(rtp_timestamp));
 }
 
 FrameAssembler::RxFrame* FrameAssembler::find_frame(std::uint32_t frame_id) {
@@ -92,6 +102,7 @@ AssemblerOutput FrameAssembler::on_packet(AcceptedPacket&& packet) {
     RxFrame nf;
     nf.frame_id = packet.frame_id;
     nf.rtp_timestamp = packet.rtp_timestamp;
+    nf.unwrapped_rtp_ts = unwrapper_.unwrap(packet.rtp_timestamp);
     nf.first_seq = packet.seq - packet.frame_index;
     nf.frame_count = packet.frame_count;
     nf.stream_id = packet.stream_id;
@@ -145,7 +156,7 @@ AssemblerOutput FrameAssembler::on_timer(MonoNs now) {
       ++it;
       continue;
     }
-    if (playout_for(f.rtp_timestamp) <= now) {
+    if (playout_for_unwrapped(f.unwrapped_rtp_ts) <= now) {
       out.expired_frames.push_back(f.frame_id);  // EXPIRED (ADR-0006)
       it = frames_.erase(it);
     } else {
@@ -199,7 +210,7 @@ std::optional<MonoNs> FrameAssembler::next_expiry_deadline() const {
   for (const auto& [key, f] : frames_) {
     (void)key;
     if (f.dead || f.received_count == f.frame_count) continue;
-    const MonoNs playout = playout_for(f.rtp_timestamp);
+    const MonoNs playout = playout_for_unwrapped(f.unwrapped_rtp_ts);
     if (!best || playout < *best) best = playout;
   }
   return best;

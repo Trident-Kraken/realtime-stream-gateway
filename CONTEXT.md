@@ -49,7 +49,7 @@ it deliberately.
   behind this role is the **EventLoop**
   (`include/rudp_rt/event_loop.hpp`): one deep module owning the epoll set,
   timerfd, signalfd, and the timer heap (ADR-0010), driving a Delegate
-  through the fixed wake-stage order (wait → due timers → drain_input →
+  through the fixed wake-stage order (wait → drain_input → due timers →
   pump → EPOLLOUT → after_wake). Gateway and Client are its two policy
   adapters; SimDriver keeps a virtual-time loop over the same node API.
 - **Capture queue** — bounded SPSC queue between the media source worker and

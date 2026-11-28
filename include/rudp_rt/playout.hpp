@@ -109,6 +109,8 @@ class PlayoutPipeline {
   bool anchor_set_ = false;
   MonoNs anchor_arrival_ = 0;
   std::uint32_t anchor_rtp_ts_ = 0;
+  std::int64_t anchor_unwrapped_rtp_ = 0;
+  RtpTimestampUnwrapper rtp_unwrapper_;
 
   // Playout accounting (INV-21) and ADR-0012 observation.
   std::uint64_t delivered_ontime_ = 0;

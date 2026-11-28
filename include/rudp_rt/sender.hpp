@@ -171,6 +171,7 @@ class Sender {
   // remains; marks it sent (first_send/last_send/in_flight).
   virtual std::optional<Datagram> emit_new_data(MonoNs now,
                                                 std::int64_t byte_budget) = 0;
+  virtual std::optional<std::size_t> next_unsent_size() const = 0;
   virtual SenderOutput take_output() = 0;
   virtual std::optional<MonoNs> next_deadline() const = 0;
   virtual const PacketCounters& counters() const = 0;
@@ -197,6 +198,7 @@ class TransportSender final : public Sender {
 
   std::optional<Datagram> emit_new_data(MonoNs now,
                                         std::int64_t byte_budget) override;
+  std::optional<std::size_t> next_unsent_size() const override;
   SenderOutput take_output() override {
     SenderOutput result = std::move(out_);
     out_ = SenderOutput{};  // moving vectors does not clear scalar event flags

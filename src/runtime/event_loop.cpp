@@ -202,16 +202,16 @@ void EventLoop::run(Delegate& delegate, IClock& clock, MonoNs end_at) {
       }
     }
 
-    while (auto e = timers_.pop_due(post)) {
-      delegate.on_timer(*e, post);
-    }
-
     if (stop_requested && !stop_notified) {
       stop_notified = true;
       delegate.on_stop();
     }
 
     delegate.drain_input(post);
+
+    while (auto e = timers_.pop_due(post)) {
+      delegate.on_timer(*e, post);
+    }
     if (net_ != nullptr) {
       const bool pending = delegate.pump(*net_, post);
       if (pending && !epollout_armed) {

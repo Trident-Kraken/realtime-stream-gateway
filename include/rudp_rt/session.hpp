@@ -25,6 +25,7 @@
 #include "rudp_rt/wire.hpp"
 
 #include <deque>
+#include <limits>
 #include <map>
 #include <optional>
 #include <vector>
@@ -160,6 +161,47 @@ class TokenBucket {
     }
     return false;
   }
+  std::optional<MonoNs> ready_at(MonoNs now, std::int64_t needed_bytes) const {
+    if (needed_bytes <= tokens_) return now;
+    if (rate_ <= 0 || needed_bytes > burst_) return std::nullopt;
+    const MonoNs base = last_refill_ >= 0 ? last_refill_ : now;
+    constexpr std::uint64_t kNsPerSecU = static_cast<std::uint64_t>(kNsPerSec);
+    const std::uint64_t utokens =
+        tokens_ > 0 ? static_cast<std::uint64_t>(tokens_) : 0u;
+    const std::uint64_t deficit =
+        static_cast<std::uint64_t>(needed_bytes) - utokens;
+    const std::uint64_t urate = static_cast<std::uint64_t>(rate_);
+
+    const std::uint64_t q = deficit / urate;
+    const std::uint64_t r = deficit % urate;
+    if (q > static_cast<std::uint64_t>(std::numeric_limits<MonoNs>::max()) /
+                kNsPerSecU) {
+      return std::nullopt;
+    }
+    const std::uint64_t base_ns = q * kNsPerSecU;
+    std::uint64_t delay_ns = 0;
+    if (r == 0) {
+      delay_ns = base_ns - (rem_ns_ / urate);
+    } else {
+      std::uint64_t extra_ns = kNsPerSecU;
+      if (r <= std::numeric_limits<std::uint64_t>::max() / kNsPerSecU) {
+        const std::uint64_t rem_prod = r * kNsPerSecU - rem_ns_;
+        extra_ns = (rem_prod - 1u) / urate + 1u;
+      }
+      if (base_ns > std::numeric_limits<std::uint64_t>::max() - extra_ns) {
+        return std::nullopt;
+      }
+      delay_ns = base_ns + extra_ns;
+    }
+    if (delay_ns > static_cast<std::uint64_t>(std::numeric_limits<MonoNs>::max())) {
+      return std::nullopt;
+    }
+    const MonoNs sdelay = static_cast<MonoNs>(delay_ns);
+    if (base > std::numeric_limits<MonoNs>::max() - sdelay) {
+      return std::nullopt;
+    }
+    return std::max(now, base + sdelay);
+  }
   std::int64_t tokens() const { return tokens_; }
 
  private:
@@ -223,9 +265,9 @@ class Session {
   };
   LivenessScan liveness_scan(const Config& cfg, MonoNs now);
 
-  // Earliest deadline among sender timers, keepalive scheduling, and the
-  // ACK-starvation watch — the same formulas liveness_scan enforces.
-  MonoNs next_timer_deadline(const Config& cfg) const;
+  // Earliest deadline among sender timers, keepalive scheduling, queued
+  // outbound pacing, and the ACK-starvation watch.
+  MonoNs next_timer_deadline(const Config& cfg, MonoNs now) const;
 
  private:
   MonoNs last_outbound_ = 0;

@@ -363,3 +363,45 @@ Current suite contains 86 cases; CI status is dynamic.
   preserved as historical schema-v2 baselines (regenerate via
   `tools/run_benchmarks.sh` / `tools/run_fault_matrix.sh` if updated reference
   runs are desired).
+
+## Receiver liveness, GOP pruning, EventLoop order & RTP wrap fixes (2026-11-28)
+
+- **Command:** `cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DRUDP_WERROR=ON && cmake --build build -j$(nproc)`,
+  `ctest --test-dir build --output-on-failure -j1`,
+  `cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=address -DRUDP_WERROR=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build-asan -j$(nproc)`,
+  `python3 tools/check_sanitizer.py build-asan address`,
+  `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ctest --test-dir build-asan --output-on-failure -j1`,
+  `./tools/run_fault_matrix.sh /tmp/rudp-fault-verify`.
+- **Result:** 122/122 normal tests (`-DRUDP_WERROR=ON`, 0 warnings) and
+  122/122 ASan+UBSan tests passed; `check_sanitizer.py` passed; all 15
+  fault-matrix cells and determinism replay passed in `/tmp/rudp-fault-verify`.
+- **Protocol & runtime fixes:**
+  1. `UdpReceiver` / `FrameAssembler` / `JitterBuffer` / `PlayoutPipeline`:
+     replied with idempotent ACKs for in-window retransmissions (`too_old`
+     within `window_w`), abandoned ranges, and buffered duplicates so uplink
+     ACK loss never wedges `--no-deadline` or drops intact GOPs; kept valid
+     sequence consumption running past conflict tombstones while blocking
+     assembly/delivery; protected complete frames waiting in `JitterBuffer`
+     from late `ABANDON` ranges and propagated jitter overflow evictions to
+     `PlayoutPipeline`.
+  2. `GatewayNode` / `ControlQueue`: carried forward prior session frame
+     ledgers and packet counters across `(endpoint, stream_id)` reconnects and
+     `RESTART` replacements; fixed `ControlQueue::push` to count evicted
+     non-critical entries on `ABANDON` displacement and guard 1-byte reads.
+  3. `TransportSender` / `CaptureWorker`: recorded pre-admission keyframe
+     drops and requested upstream keyframe recovery (including mid-GOP joins
+     before the first keyframe and `CaptureWorker` drop-newest overflows);
+     preserved actual `frame_id` on oversized drops.
+  4. `EventLoop` / `TokenBucket` / `RtpTimestampUnwrapper`: aligned Linux wake
+     stage order (`drain_input` before due timers) with `SimDriver` to prevent
+     spurious RTO/deadline triggers when ACKs arrive on the same wake; added
+     exact `TokenBucket::ready_at` and `TransportSender::next_unsent_size`
+     wakeups for token exhaustion and `turn_byte_limit` splits; added
+     incremental 64-bit RTP unwrapping (`RtpTimestampUnwrapper`) across
+     `FrameAssembler`, `JitterBuffer`, and `PlayoutPipeline` to handle
+     6.63-hour (2^31) and 13.26-hour (2^32) rollovers cleanly.
+- **Files:** `CONTEXT.md`, `README.md`, `README_zh.md`,
+  `docs/{DEV-LOG,validation-notes}.md`,
+  `include/rudp_rt/{event_loop,playout,receiver,sender,session}.hpp`,
+  `src/{transport/receiver,transport/frame_assembler,transport/jitter_buffer,transport/playout_pipeline,transport/sender,session/session,session/session_manager,runtime/event_loop,runtime/reactor}.cpp`,
+  `tests/unit/{cases.txt,net_faults.cpp,sender_receiver.cpp}`.

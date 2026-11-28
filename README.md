@@ -49,7 +49,7 @@ python3 tools/socket_experiment.py --scenario outage-400ms --reps 1 --out /tmp/r
 python3 tools/render_demo.py /tmp/gop.json --svg /tmp/gop.svg --replay
 ```
 
-118 CTest cases cover unit, property, integration, fault, benchmark-contract and
+122 CTest cases cover unit, property, integration, fault, benchmark-contract and
 real-socket scenarios. CI verifies actual sanitizer compilation/linkage and runs
 ASan/UBSan and TSan; the dynamic CI badge links to current results.
 

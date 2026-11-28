@@ -14,6 +14,8 @@ void JitterBuffer::set_anchor(MonoNs arrival, std::uint32_t rtp_timestamp,
   anchor_arrival_ = arrival;
   anchor_rtp_ts_ = rtp_timestamp;
   playout_delay_ = playout_delay;
+  unwrapper_.reset();
+  anchor_unwrapped_rtp_ = unwrapper_.unwrap(rtp_timestamp);
 }
 
 void JitterBuffer::reset() {
@@ -22,11 +24,15 @@ void JitterBuffer::reset() {
   anchored_ = false;
   anchor_arrival_ = 0;
   anchor_rtp_ts_ = 0;
+  anchor_unwrapped_rtp_ = 0;
+  unwrapper_.reset();
 }
 
 MonoNs JitterBuffer::playout_for(std::uint32_t rtp_timestamp) const {
   if (!anchored_) return INT64_MAX;
-  return rtp_to_mono(anchor_arrival_, anchor_rtp_ts_, rtp_timestamp) +
+  return anchor_arrival_ +
+         unwrapped_rtp_delta_to_ns(unwrapper_.peek_unwrap(rtp_timestamp) -
+                                   anchor_unwrapped_rtp_) +
          playout_delay_;
 }
 
@@ -47,7 +53,13 @@ std::vector<JitterBuffer::Delivery> JitterBuffer::push(
     dropped_++;  // dead frame never delivered (INV-08)
     return immediate;
   }
-  const MonoNs playout = playout_for(frame.rtp_timestamp);
+  const std::int64_t unwrapped = unwrapper_.unwrap(frame.rtp_timestamp);
+  const MonoNs playout =
+      anchored_
+          ? anchor_arrival_ +
+                unwrapped_rtp_delta_to_ns(unwrapped - anchor_unwrapped_rtp_) +
+                playout_delay_
+          : INT64_MAX;
   if (anchored_ && playout + kNsPerMs <= now) {
     // Completion after playout (beyond the G tolerance): deliver
     // immediately as LATE.

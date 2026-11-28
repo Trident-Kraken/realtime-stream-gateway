@@ -444,6 +444,18 @@ std::optional<Datagram> TransportSender::emit_new_data(
   return std::nullopt;
 }
 
+std::optional<std::size_t> TransportSender::next_unsent_size() const {
+  if (torn_down_) return std::nullopt;
+  for (const auto& f : frames_) {
+    if (f.abandoned) continue;
+    for (const auto& p : f.packets) {
+      if (p.in_flight || seq_lt(p.seq, send_base_)) continue;
+      return kHeaderSize + kRtpHeaderSize + static_cast<std::size_t>(p.len);
+    }
+  }
+  return std::nullopt;
+}
+
 std::optional<MonoNs> TransportSender::next_deadline() const {
   std::optional<MonoNs> best;
   const auto consider = [&best](MonoNs t) {

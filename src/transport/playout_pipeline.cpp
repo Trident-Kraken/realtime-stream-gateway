@@ -88,6 +88,8 @@ void PlayoutPipeline::reset_session_state() {
   anchor_set_ = false;
   anchor_arrival_ = 0;
   anchor_rtp_ts_ = 0;
+  anchor_unwrapped_rtp_ = 0;
+  rtp_unwrapper_.reset();
 }
 
 void PlayoutPipeline::set_sync(std::uint32_t server_isn,
@@ -146,7 +148,11 @@ void PlayoutPipeline::process_accepted(std::vector<AcceptedPacket>& accepted,
       jitter_.set_anchor(ap.arrival, ap.rtp_timestamp, playout_delay_);
       anchor_arrival_ = ap.arrival;
       anchor_rtp_ts_ = ap.rtp_timestamp;
+      rtp_unwrapper_.reset();
+      anchor_unwrapped_rtp_ = rtp_unwrapper_.unwrap(ap.rtp_timestamp);
       anchor_set_ = true;
+    } else {
+      (void)rtp_unwrapper_.unwrap(ap.rtp_timestamp);
     }
     AssemblerOutput aout = assembler_.on_packet(std::move(ap));
     for (const std::uint32_t dead : aout.dead_frames) {
@@ -181,7 +187,9 @@ bool PlayoutPipeline::close_frame(std::uint32_t id, SessionFrameOutcome outcome)
 }
 
 MonoNs PlayoutPipeline::capture_estimate(std::uint32_t rtp_ts) const {
-  return rtp_to_mono(anchor_arrival_, anchor_rtp_ts_, rtp_ts);
+  return anchor_arrival_ +
+         unwrapped_rtp_delta_to_ns(rtp_unwrapper_.peek_unwrap(rtp_ts) -
+                                   anchor_unwrapped_rtp_);
 }
 
 void PlayoutPipeline::observe_delivery(JitterBuffer::Delivery& d, MonoNs now) {

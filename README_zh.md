@@ -42,7 +42,7 @@ python3 tools/socket_experiment.py --scenario outage-400ms --reps 1 --out /tmp/r
 python3 tools/render_demo.py /tmp/gop.json --svg /tmp/gop.svg --replay
 ```
 
-当前 118 项 CTest 覆盖单元、属性、集成、故障、基准契约及真实 socket 场景。CI 校验实际编译插桩和运行库链接，并执行 ASan/UBSan、TSan；状态以顶部动态 CI 链接为准。
+当前 122 项 CTest 覆盖单元、属性、集成、故障、基准契约及真实 socket 场景。CI 校验实际编译插桩和运行库链接，并执行 ASan/UBSan、TSan；状态以顶部动态 CI 链接为准。
 
 ```bash
 cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DRUDP_SANITIZE=address \

@@ -99,28 +99,65 @@ Session::Session(std::uint32_t id_in, std::uint32_t generation_in,
 
 std::optional<MonoNs> GatewayNode::next_deadline() const {
   std::optional<MonoNs> best;
+  const MonoNs now = clock_.now();
+  const auto consider = [&best](MonoNs t) {
+    if (!best || t < *best) best = t;
+  };
+  if (!node_pending_ && !node_control_.empty()) {
+    if (auto t = node_control_tokens_.ready_at(
+            now, static_cast<std::int64_t>(node_control_.front().bytes.size()))) {
+      consider(*t);
+    }
+  }
   for (const auto& [key, s] : sessions_) {
     (void)key;
-    if (s.dead) continue;
-    const MonoNs d = s.next_timer_deadline(cfg_);
-    if (!best || d < *best) best = d;
+    if (s.dead) {
+      if (s.teardown_cause == TeardownCause::SHUTDOWN && !s.pending_out &&
+          !s.control.empty()) {
+        if (auto t = s.control_tokens.ready_at(
+                now, static_cast<std::int64_t>(s.control.front().bytes.size()))) {
+          consider(*t);
+        }
+      }
+      continue;
+    }
+    consider(s.next_timer_deadline(cfg_, now));
   }
   return best;
 }
 
 MonoNs GatewayNode::session_next_deadline(std::uint32_t session_id) const {
+  const MonoNs now = clock_.now();
   for (const auto& [key, s] : sessions_) {
     (void)key;
-    if (s.id == session_id) return s.next_timer_deadline(cfg_);
+    if (s.id == session_id) return s.next_timer_deadline(cfg_, now);
   }
-  return clock_.now();
+  return now;
 }
 
-MonoNs Session::next_timer_deadline(const Config& cfg) const {
+MonoNs Session::next_timer_deadline(const Config& cfg, MonoNs now) const {
   std::optional<MonoNs> best = sender.next_deadline();
   const auto consider = [&best](MonoNs t) {
     if (!best || t < *best) best = t;
   };
+  if (!pending_out) {
+    if (!control.empty()) {
+      if (auto t = control_tokens.ready_at(
+              now, static_cast<std::int64_t>(control.front().bytes.size()))) {
+        consider(*t);
+      }
+    }
+    if (!data_queue.empty()) {
+      if (auto t = data_tokens.ready_at(
+              now, static_cast<std::int64_t>(data_queue.front().bytes.size()))) {
+        consider(*t);
+      }
+    } else if (auto sz = sender.next_unsent_size()) {
+      if (auto t = data_tokens.ready_at(now, static_cast<std::int64_t>(*sz))) {
+        consider(*t);
+      }
+    }
+  }
   // Keepalive probe scheduling / final probe grace expiry (spec §4.3).
   if (unanswered_probes_ >=
       static_cast<std::uint32_t>(cfg.keepalive_max_probes)) {
