@@ -1386,4 +1386,138 @@ RUDP_TEST(receiver_acks_retransmissions_and_preserves_completed_jitter_frames) {
   }
 }
 
+RUDP_TEST(sender_preadmission_drop_and_mid_gop_join_request_keyframe_and_prune) {
+  // 1) Mid-GOP join prunes initial DELTA_FRAMEs, requests a keyframe once,
+  //    and preserves SYNC_START on the first admitted KEY_FRAME.
+  {
+    VirtualClock clock;
+    SenderConfig sc;
+    sc.stream_id = 1;
+    sc.ssrc = 7;
+    sc.session_epoch = 55;
+    sc.isn = 1000;
+    sc.window_w = 10;
+    sc.max_frame_packets = 10;
+    sc.media_payload_bytes = 1200;
+    TransportSender sender(sc, clock);
+
+    // Oversized frame report preserves actual frame_id (42), not 0.
+    MediaFrame huge;
+    huge.stream_id = 1;
+    huge.frame_id = 42;
+    huge.capture_time = clock.now();
+    huge.deadline_budget = ns_from_ms(100);
+    huge.bytes.assign(20000, std::byte{0x1});
+    sender.on_frame(std::move(huge));
+    auto huge_out = sender.take_output();
+    RUDP_CHECK_EQ(huge_out.admissions.size(), 1u);
+    RUDP_CHECK(!huge_out.admissions[0].admitted);
+    RUDP_CHECK_EQ(huge_out.admissions[0].frame_id, 42u);
+
+    // Delta frames arriving before any admitted KEY_FRAME are pruned.
+    SenderConfig sc2 = sc;
+    TransportSender sender2(sc2, clock);
+    MediaFrame d10;
+    d10.stream_id = 1;
+    d10.frame_id = 10;
+    d10.frame_type = FrameType::DELTA_FRAME;
+    d10.depends_on_frame = 9;
+    d10.capture_time = clock.now();
+    d10.deadline_budget = ns_from_ms(100);
+    d10.bytes.assign(1200, std::byte{0x2});
+    sender2.on_frame(std::move(d10));
+    auto out10 = sender2.take_output();
+    RUDP_CHECK(!out10.admissions[0].admitted);
+    RUDP_CHECK(out10.keyframe_requested);
+    RUDP_CHECK_EQ(sender2.counters().cascade_abandons, 1u);
+    RUDP_CHECK_EQ(sender2.allocated_unacked(), 0u);
+
+    // First KEY_FRAME arrives: admitted cleanly and carries kFlagSyncStart.
+    MediaFrame k11;
+    k11.stream_id = 1;
+    k11.frame_id = 11;
+    k11.frame_type = FrameType::KEY_FRAME;
+    k11.capture_time = clock.now();
+    k11.deadline_budget = ns_from_ms(100);
+    k11.bytes.assign(1200, std::byte{0x3});
+    sender2.on_frame(std::move(k11));
+    auto out11 = sender2.take_output();
+    RUDP_CHECK(out11.admissions[0].admitted);
+    auto dg11 = sender2.emit_new_data(clock.now(), 1 << 20);
+    RUDP_CHECK(dg11.has_value());
+    auto dec11 = decode_header(dg11->bytes);
+    RUDP_CHECK((dec11.header.flags & kFlagSyncStart) != 0u);
+  }
+
+  // 2) Pre-admission window-full drop of KEY_FRAME triggers keyframe request
+  //    and prunes subsequent dependent DELTA_FRAMEs once window opens.
+  {
+    VirtualClock clock;
+    SenderConfig sc;
+    sc.stream_id = 1;
+    sc.ssrc = 7;
+    sc.session_epoch = 55;
+    sc.isn = 2000;
+    sc.window_w = 10;
+    sc.max_frame_packets = 10;
+    sc.media_payload_bytes = 1200;
+    TransportSender sender(sc, clock);
+
+    MediaFrame k20;
+    k20.stream_id = 1;
+    k20.frame_id = 20;
+    k20.frame_type = FrameType::KEY_FRAME;
+    k20.capture_time = clock.now();
+    k20.deadline_budget = ns_from_ms(100);
+    k20.bytes.assign(12000, std::byte{0x4});
+    sender.on_frame(std::move(k20));
+    RUDP_CHECK(sender.take_output().admissions[0].admitted);
+
+    // Window full: KEY_FRAME 21 dropped pre-admission -> requests keyframe.
+    MediaFrame k21;
+    k21.stream_id = 1;
+    k21.frame_id = 21;
+    k21.frame_type = FrameType::KEY_FRAME;
+    k21.capture_time = clock.now();
+    k21.deadline_budget = ns_from_ms(100);
+    k21.bytes.assign(12000, std::byte{0x5});
+    sender.on_frame(std::move(k21));
+    auto out21 = sender.take_output();
+    RUDP_CHECK(!out21.admissions[0].admitted);
+    RUDP_CHECK(out21.keyframe_requested);
+
+    // Drain frame 20 so window opens again.
+    Ack ack;
+    ack.session_epoch = 55;
+    ack.ack_number = 2009;
+    sender.on_ack(ack, clock.now());
+    RUDP_CHECK(sender.window_empty());
+
+    // Dependent DELTA_FRAME 22 referencing dropped KEY_FRAME 21 is pruned.
+    MediaFrame d22;
+    d22.stream_id = 1;
+    d22.frame_id = 22;
+    d22.frame_type = FrameType::DELTA_FRAME;
+    d22.depends_on_frame = 21;
+    d22.capture_time = clock.now();
+    d22.deadline_budget = ns_from_ms(100);
+    d22.bytes.assign(1200, std::byte{0x6});
+    sender.on_frame(std::move(d22));
+    auto out22 = sender.take_output();
+    RUDP_CHECK(!out22.admissions[0].admitted);
+    RUDP_CHECK_EQ(sender.counters().cascade_abandons, 1u);
+
+    // Next fresh KEY_FRAME 23 is admitted cleanly.
+    MediaFrame k23;
+    k23.stream_id = 1;
+    k23.frame_id = 23;
+    k23.frame_type = FrameType::KEY_FRAME;
+    k23.capture_time = clock.now();
+    k23.deadline_budget = ns_from_ms(100);
+    k23.bytes.assign(1200, std::byte{0x7});
+    sender.on_frame(std::move(k23));
+    RUDP_CHECK(sender.take_output().admissions[0].admitted);
+  }
+}
+
 }  // namespace rudp_test

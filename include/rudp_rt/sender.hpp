@@ -248,6 +248,8 @@ class TransportSender final : public Sender {
   std::uint32_t last_valid_ack_ = 0; // last cumulatively consumed seen
   bool sync_start_pending_ = true;   // first admitted frame carries SYNC_START
   bool any_frame_admitted_ = false;
+  bool has_admitted_keyframe_ = false;
+  bool keyframe_req_pending_ = false;
   bool torn_down_ = false;
 
   PacketCounters counters_;

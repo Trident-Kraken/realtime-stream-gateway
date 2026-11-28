@@ -54,8 +54,9 @@ void CaptureWorker::run() {
         if (queue_.try_push(std::move(*frame))) {
           wake_.notify();
         } else {
-          // Producer-side drop-newest (ADR-0001); counted via the documented
-          // atomic callback (source ledger, spec §3.1).
+          // Producer-side drop-newest (ADR-0001); request a keyframe so any
+          // dropped reference frame triggers a clean GOP recovery.
+          source_.request_keyframe();
           if (on_drop_) on_drop_();
         }
         continue;

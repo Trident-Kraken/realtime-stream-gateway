@@ -65,24 +65,36 @@ TransportSender::TransportSender(SenderConfig cfg, IClock& clock)
 
 void TransportSender::on_frame(MediaFrame frame) {
   const MonoNs now = clock_->now();
+  const std::uint32_t fid = frame.frame_id;
+  const FrameType ftype = frame.frame_type;
   if (torn_down_) {
-    out_.admissions.push_back({frame.frame_id, false});
+    out_.admissions.push_back({fid, false});
     return;
   }
+  auto note_broken_gop_drop = [&](std::uint32_t dropped_id, bool request_kf) {
+    record_abandoned_frame(dropped_id);
+    if (request_kf && !keyframe_req_pending_) {
+      out_.keyframe_requested = true;
+      keyframe_req_pending_ = true;
+    }
+  };
   auto pf = packetizer_.packetize(std::move(frame), cfg_.ssrc,
                                   cfg_.media_payload_bytes,
                                   cfg_.max_frame_packets);
   if (!pf) {
     counters_.protocol_violations++;  // frame larger than configuration
-    out_.admissions.push_back({pf ? 0u : 0u, false});
+    note_broken_gop_drop(fid,
+                         ftype == FrameType::KEY_FRAME || has_admitted_keyframe_);
+    out_.admissions.push_back({fid, false});
     return;
   }
-  // Broken GOP Fast Pruning: If this is a DELTA_FRAME whose dependency was
-  // already abandoned, drop it before admission to save window slots.
+  // Broken GOP Fast Pruning: drop DELTA_FRAME before admission when its
+  // dependency was lost/abandoned or no baseline KEY_FRAME has been admitted yet.
   if (pf->frame_type == FrameType::DELTA_FRAME &&
-      is_dependency_abandoned(pf->depends_on_frame)) {
+      (is_dependency_abandoned(pf->depends_on_frame) ||
+       !has_admitted_keyframe_)) {
     counters_.cascade_abandons++;
-    record_abandoned_frame(pf->frame_id);
+    note_broken_gop_drop(pf->frame_id, !has_admitted_keyframe_);
     out_.admissions.push_back({pf->frame_id, false});
     return;
   }
@@ -93,12 +105,18 @@ void TransportSender::on_frame(MediaFrame frame) {
   const MonoNs threshold =
       std::min(rtt_.admission_threshold(), pf->deadline_budget / 2);
   if (remaining <= threshold) {
+    note_broken_gop_drop(pf->frame_id,
+                         pf->frame_type == FrameType::KEY_FRAME ||
+                             has_admitted_keyframe_);
     out_.admissions.push_back({pf->frame_id, false});
     return;
   }
   const std::uint64_t allocated =
       seq_forward(send_base_, next_seq_) + pf->frame_count();
   if (allocated > static_cast<std::uint64_t>(cfg_.window_w)) {
+    note_broken_gop_drop(pf->frame_id,
+                         pf->frame_type == FrameType::KEY_FRAME ||
+                             has_admitted_keyframe_);
     out_.admissions.push_back({pf->frame_id, false});
     return;
   }
@@ -116,6 +134,10 @@ void TransportSender::on_frame(MediaFrame frame) {
   f.media = std::move(pf->bytes);
   f.sync_start = sync_start_pending_;
   sync_start_pending_ = false;
+  if (f.frame_type == FrameType::KEY_FRAME) {
+    has_admitted_keyframe_ = true;
+    keyframe_req_pending_ = false;
+  }
 
   f.packets.resize(f.frame_count);
   for (std::uint16_t i = 0; i < f.frame_count; ++i) {
@@ -326,6 +348,7 @@ void TransportSender::cascade_abandon_dependents(
     std::vector<AbandonRange>& pending_ranges) {
   record_abandoned_frame(root_abandoned_frame_id);
   out_.keyframe_requested = true;
+  keyframe_req_pending_ = true;
   std::vector<std::uint32_t> newly_abandoned{root_abandoned_frame_id};
   bool found_any = true;
   while (found_any) {
