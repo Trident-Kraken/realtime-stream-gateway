@@ -107,12 +107,14 @@ ControlOutput UdpReceiver::on_datagram(const Datagram& datagram, MonoNs now) {
   }
 
   const std::uint32_t seq = h.seq;
-  if (frame_dead(h.frame_id)) {
-    counters_.dead_frame_drops++;
-    return out;
-  }
   if (seq_lt(seq, recv_next_)) {
     counters_.too_old++;
+    if (static_cast<std::uint32_t>(recv_next_ - seq) <=
+        static_cast<std::uint32_t>(cfg_.window_w)) {
+      // Retransmission of a recently consumed sequence whose ACK may have
+      // been lost: reply with an idempotent ACK so the sender can advance.
+      enqueue_ack(out.datagrams);
+    }
     return out;
   }
   if (!seq_lt(seq, recv_next_ + static_cast<std::uint32_t>(cfg_.window_w))) {
@@ -121,10 +123,12 @@ ControlOutput UdpReceiver::on_datagram(const Datagram& datagram, MonoNs now) {
   }
   if (seq_covered_by_abandon(seq)) {
     counters_.dead_frame_drops++;
+    enqueue_ack(out.datagrams);
     return out;
   }
   if (storage_.count(seq) != 0) {
     counters_.duplicates++;
+    enqueue_ack(out.datagrams);
     return out;
   }
 
@@ -146,7 +150,8 @@ ControlOutput UdpReceiver::on_datagram(const Datagram& datagram, MonoNs now) {
   ap.media.assign(payload.begin() + static_cast<std::ptrdiff_t>(kHeaderSize + kRtpHeaderSize),
                   payload.end());
 
-  if (validate_descriptor_) {
+  const bool dead = frame_dead(h.frame_id);
+  if (!dead && validate_descriptor_) {
     const DataClassification cls = validate_descriptor_(ap);
     if (cls != DataClassification::VALID) {
       counters_.protocol_violations++;
@@ -163,8 +168,14 @@ ControlOutput UdpReceiver::on_datagram(const Datagram& datagram, MonoNs now) {
   }
 
   storage_[seq] = StoredPacket{h.frame_id, h.frame_index, now, false};
-  out.accepted.push_back(std::move(ap));
   counters_.data_received++;
+  if (dead) {
+    // Frame is marked dead (e.g., descriptor conflict): still consume valid
+    // sequence slots so the transport window advances, while refusing assembly.
+    counters_.dead_frame_drops++;
+  } else {
+    out.accepted.push_back(std::move(ap));
+  }
 
   const bool moved = advance_recv_next(now, out);
   if (seq_gt(seq, recv_next_)) {

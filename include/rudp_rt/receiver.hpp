@@ -171,6 +171,7 @@ class FrameAssembler {
   void on_abandon_ranges(const std::vector<AbandonRange>& ranges,
                          std::vector<std::uint32_t>& dead_out);
   void on_frame_dead(std::uint32_t frame_id);
+  bool is_dead(std::uint32_t frame_id) const;
 
   // Pre-storage descriptor validation called by the receiver so the spec §4.7
   // classification order (… DUPLICATE, descriptor conflict, VALID) holds
@@ -208,6 +209,7 @@ class FrameAssembler {
   std::uint32_t anchor_rtp_ts_ = 0;
   MonoNs playout_delay_ = 0;
   std::unordered_map<std::uint32_t, RxFrame> frames_;
+  std::deque<std::uint32_t> dead_ids_;
 };
 
 // ---------------------------------------------------------------------------
@@ -229,9 +231,11 @@ class JitterBuffer {
                   MonoNs playout_delay);
   void reset();
   // Returns frames delivered immediately (completion after playout = LATE).
-  std::vector<Delivery> push(CompletedFrame&& frame, MonoNs now);
+  std::vector<Delivery> push(CompletedFrame&& frame, MonoNs now,
+                             std::optional<std::uint32_t>* evicted_out = nullptr);
   // Returns true when a pending entry existed for the frame.
   bool push_dead(std::uint32_t frame_id);
+  bool contains(std::uint32_t frame_id) const;
   std::vector<Delivery> on_timer(MonoNs now);
   std::optional<MonoNs> next_delivery_deadline() const;
   std::size_t size() const { return pending_.size(); }

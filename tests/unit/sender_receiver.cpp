@@ -1172,4 +1172,218 @@ RUDP_TEST(client_node_bytes_owned_tracks_assembly_jitter_and_deliveries) {
   RUDP_CHECK_EQ(client.bytes_owned(), 0u);    // drained by caller
 }
 
+RUDP_TEST(receiver_acks_retransmissions_and_preserves_completed_jitter_frames) {
+  // 1) --no-deadline full window with dropped initial ACKs + duplicate SACK:
+  //    retransmissions within window_w behind recv_next must elicit idempotent
+  //    ACKs so the sender is never wedged; duplicates in storage_ re-emit SACKs.
+  {
+    VirtualClock clock;
+    SenderConfig sc;
+    sc.stream_id = 1;
+    sc.ssrc = 7;
+    sc.session_epoch = 5;
+    sc.isn = 1000;
+    sc.window_w = 10;
+    sc.max_frame_packets = 10;
+    sc.media_payload_bytes = 1200;
+    sc.deadline_mode = false;
+    TransportSender tx(sc, clock);
+
+    ReceiverConfig rc;
+    rc.peer = Endpoint{1, 1};
+    rc.stream_id = 1;
+    rc.session_epoch = 5;
+    rc.isn = 1000;
+    rc.window_w = 10;
+    rc.reorder_capacity = 32;
+    UdpReceiver rx(rc, clock);
+    rx.set_sync(1000, 5);
+
+    auto make_frame = [&](std::uint32_t fid) {
+      MediaFrame f;
+      f.stream_id = 1;
+      f.frame_id = fid;
+      f.rtp_timestamp = fid * 3000u;
+      f.capture_time = clock.now();
+      f.deadline_budget = ns_from_ms(100);
+      f.bytes.assign(12000, std::byte{0x3});
+      return f;
+    };
+
+    tx.on_frame(make_frame(0));
+    auto adm0 = tx.take_output();
+    RUDP_CHECK_EQ(adm0.admissions.size(), 1u);
+    RUDP_CHECK(adm0.admissions[0].admitted);
+
+    for (int i = 0; i < 10; ++i) {
+      auto dg = tx.emit_new_data(clock.now(), 1 << 20);
+      RUDP_CHECK(dg.has_value());
+      (void)rx.on_datagram(*dg, clock.now());  // drop all uplink ACKs
+    }
+    RUDP_CHECK_EQ(rx.recv_next(), 1010u);
+    RUDP_CHECK_EQ(tx.allocated_unacked(), 10u);
+
+    // Frame 1 blocked because window is full (initial ACKs were lost).
+    tx.on_frame(make_frame(1));
+    auto adm1 = tx.take_output();
+    RUDP_CHECK(!adm1.admissions[0].admitted);
+
+    // Ancient seq far behind recv_next - W must NOT emit an ACK.
+    Header old_h;
+    old_h.version = kWireVersion;
+    old_h.header_len = kHeaderLenWords;
+    old_h.type = static_cast<std::uint8_t>(PacketType::DATA);
+    old_h.flags = kFlagFrameEnd;
+    old_h.stream_id = 1;
+    old_h.seq = 900;
+    old_h.frame_id = 99;
+    old_h.frame_count = 1;
+    RtpHeader old_rtp;
+    auto old_dg = *build_data_datagram(
+        Endpoint{1, 1}, old_h, old_rtp, std::vector<std::byte>(16, std::byte{0}));
+    auto old_out = rx.on_datagram(old_dg, clock.now());
+    RUDP_CHECK(old_out.datagrams.empty());
+
+    // RTO fires at 75ms: retransmitting consumed seq 1000 elicits fresh ACK.
+    clock.advance(ns_from_ms(75));
+    tx.on_timer(clock.now());
+    auto rtx = tx.take_output();
+    RUDP_CHECK(!rtx.data.empty());
+    auto ack_out = rx.on_datagram(rtx.data[0], clock.now());
+    RUDP_CHECK_EQ(rx.counters().too_old, 2u);
+    RUDP_CHECK_EQ(ack_out.datagrams.size(), 1u);
+    auto dec_ack = decode_ack(
+        std::span<const std::byte>(ack_out.datagrams[0].bytes).subspan(kHeaderSize));
+    RUDP_CHECK(dec_ack.reject == RejectReason::NONE);
+    RUDP_CHECK_EQ(dec_ack.ack.ack_number, 1009u);
+
+    tx.on_ack(dec_ack.ack, clock.now());
+    RUDP_CHECK(tx.window_empty());
+
+    // Out-of-order duplicate in storage_ re-emits SACK-bearing ACK.
+    Header h2;
+    h2.version = kWireVersion;
+    h2.header_len = kHeaderLenWords;
+    h2.type = static_cast<std::uint8_t>(PacketType::DATA);
+    h2.flags = kFlagFrameEnd;
+    h2.stream_id = 1;
+    h2.seq = 1012;
+    h2.frame_id = 2;
+    h2.rtp_timestamp = 6000;
+    h2.frame_count = 1;
+    RtpHeader rtp2;
+    rtp2.timestamp = 6000;
+    rtp2.marker = true;
+    auto dg2 = *build_data_datagram(
+        Endpoint{1, 1}, h2, rtp2, std::vector<std::byte>(16, std::byte{7}));
+    (void)rx.on_datagram(dg2, clock.now());
+    auto dup_out = rx.on_datagram(dg2, clock.now());
+    RUDP_CHECK_EQ(rx.counters().duplicates, 1u);
+    RUDP_CHECK_EQ(dup_out.datagrams.size(), 1u);
+    auto sack_ack = decode_ack(
+        std::span<const std::byte>(dup_out.datagrams[0].bytes).subspan(kHeaderSize));
+    RUDP_CHECK_EQ(sack_ack.ack.ack_number, 1009u);
+    RUDP_CHECK((sack_ack.ack.sack_bitmap & (1ull << 2)) != 0u);
+  }
+
+  // 2) Descriptor conflict kills assembly/delivery of frame 0 without wedging
+  //    recv_next_ on subsequent valid packets of frame 0.
+  {
+    VirtualClock clock;
+    ReceiverConfig rc;
+    rc.peer = Endpoint{1, 1};
+    rc.stream_id = 1;
+    rc.session_epoch = 1;
+    rc.isn = 100;
+    rc.window_w = 64;
+    rc.reorder_capacity = 256;
+    PlayoutPipeline pipeline(rc, 64, 64, ns_from_ms(60), 64, clock);
+    pipeline.set_sync(100, 1);
+
+    auto make_dg = [](std::uint32_t seq, std::uint32_t fid, std::uint16_t idx,
+                      std::uint16_t cnt, std::uint32_t rtp_ts) {
+      Header h;
+      h.version = kWireVersion;
+      h.header_len = kHeaderLenWords;
+      h.type = static_cast<std::uint8_t>(PacketType::DATA);
+      h.flags = (idx + 1 == cnt) ? kFlagFrameEnd : 0;
+      h.stream_id = 1;
+      h.seq = seq;
+      h.frame_id = fid;
+      h.rtp_timestamp = rtp_ts;
+      h.frame_index = idx;
+      h.frame_count = cnt;
+      RtpHeader rtp;
+      rtp.timestamp = rtp_ts;
+      rtp.marker = (idx + 1 == cnt);
+      return *build_data_datagram(
+          Endpoint{1, 1}, h, rtp, std::vector<std::byte>(24, std::byte{1}));
+    };
+
+    (void)pipeline.on_data(make_dg(100, 0, 0, 2, 3000), ns_from_ms(10));
+    // Conflicting descriptor on seq 101: rejected, frame 0 marked dead.
+    (void)pipeline.on_data(make_dg(101, 0, 1, 2, 9999), ns_from_ms(12));
+    RUDP_CHECK_EQ(pipeline.receiver_counters().protocol_violations, 1u);
+    RUDP_CHECK_EQ(pipeline.recv_next(), 101u);
+    // Legitimate packet for seq 101 advances recv_next without completing frame 0.
+    (void)pipeline.on_data(make_dg(101, 0, 1, 2, 3000), ns_from_ms(15));
+    RUDP_CHECK_EQ(pipeline.recv_next(), 102u);
+    pipeline.on_timer(ns_from_ms(120));
+    RUDP_CHECK_EQ(pipeline.delivered_ontime() + pipeline.delivered_late(), 0u);
+  }
+
+  // 3) Out-of-order completed frame sitting in JitterBuffer survives late
+  //    ABANDON covering its sequence range and delivers ONTIME.
+  {
+    VirtualClock clock;
+    ReceiverConfig rc;
+    rc.peer = Endpoint{1, 1};
+    rc.stream_id = 1;
+    rc.session_epoch = 1;
+    rc.isn = 200;
+    rc.window_w = 64;
+    rc.reorder_capacity = 256;
+    PlayoutPipeline pipeline(rc, 64, 64, ns_from_ms(100), 64, clock);
+    pipeline.set_sync(200, 1);
+
+    auto make_dg = [](std::uint32_t seq, std::uint32_t fid, std::uint16_t idx,
+                      std::uint16_t cnt, std::uint32_t rtp_ts) {
+      Header h;
+      h.version = kWireVersion;
+      h.header_len = kHeaderLenWords;
+      h.type = static_cast<std::uint8_t>(PacketType::DATA);
+      h.flags = (idx + 1 == cnt) ? kFlagFrameEnd : 0;
+      h.stream_id = 1;
+      h.seq = seq;
+      h.frame_id = fid;
+      h.rtp_timestamp = rtp_ts;
+      h.frame_index = idx;
+      h.frame_count = cnt;
+      RtpHeader rtp;
+      rtp.timestamp = rtp_ts;
+      rtp.marker = (idx + 1 == cnt);
+      return *build_data_datagram(
+          Endpoint{1, 1}, h, rtp, std::vector<std::byte>(24, std::byte{2}));
+    };
+
+    // seq 200 (frame 0) missing; frame 1 (201..202) arrives complete into jitter.
+    (void)pipeline.on_data(make_dg(201, 1, 0, 2, 3000), ns_from_ms(10));
+    (void)pipeline.on_data(make_dg(202, 1, 1, 2, 3000), ns_from_ms(12));
+    RUDP_CHECK_EQ(pipeline.recv_next(), 200u);
+    RUDP_CHECK_EQ(pipeline.jitter_depth(), 1u);
+
+    // Delayed ABANDON covering [201, 202] must not destroy completed frame 1.
+    (void)pipeline.apply_abandon({{201u, 202u}}, ns_from_ms(50));
+    RUDP_CHECK_EQ(pipeline.jitter_depth(), 1u);
+    RUDP_CHECK_EQ(pipeline.playout_dropped(), 0u);
+    RUDP_CHECK_EQ(pipeline.delivery_abandoned(), 0u);
+
+    pipeline.on_timer(ns_from_ms(110));
+    auto delivered = pipeline.take_deliveries();
+    RUDP_CHECK_EQ(delivered.size(), 1u);
+    RUDP_CHECK_EQ(delivered[0].frame.frame_id, 1u);
+    RUDP_CHECK_EQ(pipeline.delivered_ontime(), 1u);
+  }
+}
+
 }  // namespace rudp_test

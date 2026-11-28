@@ -21,7 +21,10 @@ PlayoutPipeline::PlayoutPipeline(ReceiverConfig rcfg, int assembler_frames,
       [this](const AcceptedPacket& p) {
         return assembler_.validate_descriptor(p);
       },
-      [this](std::uint32_t fid) { assembler_.on_frame_dead(fid); });
+      [this](std::uint32_t fid) {
+        assembler_.on_frame_dead(fid);
+        jitter_.push_dead(fid);
+      });
 }
 
 std::vector<Datagram> PlayoutPipeline::on_data(const Datagram& dg,
@@ -37,7 +40,8 @@ std::vector<Datagram> PlayoutPipeline::apply_abandon(
 
   // Mark covered frames dead across the pipeline (spec §4.5). A frame that
   // shows up in more than one dead list is still counted exactly once
-  // (INV-06 terminal uniqueness).
+  // (INV-06 terminal uniqueness), and frames already completely assembled in
+  // the jitter buffer are preserved rather than destroyed by a delayed ABANDON.
   std::vector<std::uint32_t> assembler_dead;
   assembler_.on_abandon_ranges(result.applied_ranges, assembler_dead);
   std::vector<std::uint32_t> all_dead = result.dead_frames;
@@ -45,15 +49,16 @@ std::vector<Datagram> PlayoutPipeline::apply_abandon(
   std::sort(all_dead.begin(), all_dead.end());
   all_dead.erase(std::unique(all_dead.begin(), all_dead.end()), all_dead.end());
   for (const std::uint32_t id : all_dead) {
-    const bool jitter_had = jitter_.push_dead(id);
-    receiver_.mark_frame_dead(id);
+    if (terminal(id) || jitter_.contains(id)) continue;
     const bool in_assembler =
         std::find(assembler_dead.begin(), assembler_dead.end(), id) !=
         assembler_dead.end();
     const bool in_receiver =
         std::find(result.dead_frames.begin(), result.dead_frames.end(), id) !=
         result.dead_frames.end();
-    if (jitter_had || in_assembler || in_receiver) {
+    if (in_assembler || in_receiver) {
+      jitter_.push_dead(id);
+      receiver_.mark_frame_dead(id);
       if (close_frame(id, SessionFrameOutcome::ABANDONED)) delivery_abandoned_++;
     }
   }
@@ -131,7 +136,9 @@ std::uint64_t PlayoutPipeline::bytes_owned() const {
 void PlayoutPipeline::process_accepted(std::vector<AcceptedPacket>& accepted,
                                        MonoNs now) {
   for (auto& ap : accepted) {
-    if (terminal(ap.frame_id)) continue;  // transport still consumed the packet
+    if (terminal(ap.frame_id) || jitter_.contains(ap.frame_id)) {
+      continue;  // transport still consumed the packet
+    }
     if (!anchor_set_) {
       // First valid packet with a consistent descriptor anchors the RTP
       // timeline (spec §4.4/§4.7).
@@ -150,8 +157,12 @@ void PlayoutPipeline::process_accepted(std::vector<AcceptedPacket>& accepted,
       jitter_.push_dead(overflow_fid);
     }
     for (auto& cf : aout.completed) {
-      for (auto& delivery : jitter_.push(std::move(cf), now)) {
+      std::optional<std::uint32_t> evicted;
+      for (auto& delivery : jitter_.push(std::move(cf), now, &evicted)) {
         observe_delivery(delivery, now);
+      }
+      if (evicted && close_frame(*evicted, SessionFrameOutcome::EXPIRED)) {
+        delivery_expired_++;
       }
     }
   }

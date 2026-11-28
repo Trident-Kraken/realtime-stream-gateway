@@ -30,10 +30,18 @@ MonoNs JitterBuffer::playout_for(std::uint32_t rtp_timestamp) const {
          playout_delay_;
 }
 
+bool JitterBuffer::contains(std::uint32_t frame_id) const {
+  return std::any_of(pending_.begin(), pending_.end(),
+                     [frame_id](const Entry& e) {
+                       return e.frame.frame_id == frame_id;
+                     });
+}
+
 // Insert keeping `pending_` sorted by serial frame order so the front is the
 // oldest not-yet-delivered frame (INV-09 ordering, overflow policy).
-std::vector<JitterBuffer::Delivery> JitterBuffer::push(CompletedFrame&& frame,
-                                                       MonoNs now) {
+std::vector<JitterBuffer::Delivery> JitterBuffer::push(
+    CompletedFrame&& frame, MonoNs now,
+    std::optional<std::uint32_t>* evicted_out) {
   std::vector<Delivery> immediate;
   if (std::find(dead_.begin(), dead_.end(), frame.frame_id) != dead_.end()) {
     dropped_++;  // dead frame never delivered (INV-08)
@@ -57,6 +65,7 @@ std::vector<JitterBuffer::Delivery> JitterBuffer::push(CompletedFrame&& frame,
 
   if (static_cast<int>(pending_.size()) > capacity_) {
     // Drop the oldest not-yet-delivered frame (spec §3.3).
+    if (evicted_out) *evicted_out = pending_.front().frame.frame_id;
     pending_.erase(pending_.begin());
     dropped_++;
   }

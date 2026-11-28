@@ -19,6 +19,7 @@ void FrameAssembler::set_anchor(MonoNs arrival, std::uint32_t rtp_timestamp,
 
 void FrameAssembler::reset() {
   frames_.clear();
+  dead_ids_.clear();
   anchored_ = false;
   anchor_arrival_ = 0;
   anchor_rtp_ts_ = 0;
@@ -59,6 +60,7 @@ AssemblerOutput FrameAssembler::on_packet(AcceptedPacket&& packet) {
       packet.frame_index >= packet.frame_count) {
     return out;
   }
+  if (is_dead(packet.frame_id)) return out;
   RxFrame* f = find_frame(packet.frame_id);
   if (f == nullptr) {
     if (!frames_.empty() &&
@@ -179,8 +181,17 @@ void FrameAssembler::on_abandon_ranges(const std::vector<AbandonRange>& ranges,
             dead_out.end());
 }
 
+bool FrameAssembler::is_dead(std::uint32_t frame_id) const {
+  return std::find(dead_ids_.begin(), dead_ids_.end(), frame_id) !=
+         dead_ids_.end();
+}
+
 void FrameAssembler::on_frame_dead(std::uint32_t frame_id) {
   frames_.erase(frame_id);
+  if (!is_dead(frame_id)) {
+    if (dead_ids_.size() >= 256) dead_ids_.pop_front();
+    dead_ids_.push_back(frame_id);
+  }
 }
 
 std::optional<MonoNs> FrameAssembler::next_expiry_deadline() const {
