@@ -876,4 +876,134 @@ RUDP_TEST(gateway_start_rolls_back_on_failure) {
   std::remove("/tmp/rudp_gw_rollback_2.jsonl");
 }
 
+RUDP_TEST(gateway_rejoin_preserves_cumulative_ledger_and_counts_control_evictions) {
+  // 1) Rejoining / RESTART from the same (endpoint, stream_id) carries forward
+  //    prior session frame ledgers and packet counters without losing history.
+  {
+    VirtualClock clock;
+    Config cfg;
+    const Endpoint cl_ep{htonl(0x0A000002u), htons(40001)};
+    GatewayNode node(cfg, clock, [] {
+      static std::uint32_t v = 100u;
+      return v += 100u;
+    });
+
+    auto send_join_ep = [&](std::uint32_t client_epoch, MonoNs now) {
+      Ping ping;
+      ping.nonce = client_epoch;
+      ping.purpose = PingPurpose::JOIN;
+      ping.client_epoch = client_epoch;
+      const std::size_t len = encoded_ping_size(ping.purpose);
+      Datagram dg;
+      dg.peer = cl_ep;
+      dg.bytes.assign(kHeaderSize + len, std::byte{0});
+      Header h;
+      h.version = kWireVersion;
+      h.header_len = kHeaderLenWords;
+      h.type = static_cast<std::uint8_t>(PacketType::PING);
+      h.stream_id = 1;
+      h.payload_len = static_cast<std::uint16_t>(len);
+      encode_header(dg.bytes.data(), h);
+      encode_ping(dg.bytes.data() + kHeaderSize, ping);
+      node.on_datagram(dg, now);
+    };
+
+    auto ack_all = [&](std::uint32_t epoch, std::uint32_t ack_num, MonoNs now) {
+      Ack a;
+      a.session_epoch = epoch;
+      a.ack_number = ack_num;
+      Datagram dg;
+      dg.peer = cl_ep;
+      dg.bytes.assign(kHeaderSize + encoded_ack_size(), std::byte{0});
+      Header h;
+      h.version = kWireVersion;
+      h.header_len = kHeaderLenWords;
+      h.type = static_cast<std::uint8_t>(PacketType::ACK);
+      h.stream_id = 1;
+      h.payload_len = static_cast<std::uint16_t>(encoded_ack_size());
+      encode_header(dg.bytes.data(), h);
+      encode_ack(dg.bytes.data() + kHeaderSize, a);
+      node.on_datagram(dg, now);
+    };
+
+    RecordingNetwork net;
+    clock.set(ns_from_ms(10));
+    send_join_ep(1u, clock.now());
+    (void)node.pump(net, clock.now());
+    auto pong1 = decode_pong(
+        std::span<const std::byte>(net.sent.back().bytes).subspan(kHeaderSize));
+    net.sent.clear();
+
+    MediaFrame f0;
+    f0.stream_id = 1;
+    f0.frame_id = 0;
+    f0.capture_time = clock.now();
+    f0.deadline_budget = ns_from_ms(500);
+    f0.bytes.assign(1200, std::byte{0x1});
+    node.offer_frame(std::move(f0), clock.now());
+    (void)node.pump(net, clock.now());
+    RUDP_CHECK_EQ(net.sent.size(), 1u);
+    ack_all(pong1.pong.session_epoch, pong1.pong.server_isn, ns_from_ms(20));
+
+    const auto agg1 = node.aggregate_ledger();
+    RUDP_CHECK_EQ(agg1.offered_count, 1u);
+    RUDP_CHECK_EQ(agg1.ontime, 1u);
+    const std::uint64_t sent1 = node.collect_sessions()[0].packets.data_sent;
+    RUDP_CHECK_EQ(sent1, 1u);
+
+    // Client restarts on the same endpoint (> 100ms replacement throttle).
+    clock.set(ns_from_ms(200));
+    net.sent.clear();
+    send_join_ep(2u, clock.now());
+    (void)node.pump(net, clock.now());
+    auto pong2 = decode_pong(
+        std::span<const std::byte>(net.sent.back().bytes).subspan(kHeaderSize));
+    net.sent.clear();
+
+    MediaFrame f1;
+    f1.stream_id = 1;
+    f1.frame_id = 1;
+    f1.capture_time = clock.now();
+    f1.deadline_budget = ns_from_ms(500);
+    f1.bytes.assign(1200, std::byte{0x2});
+    node.offer_frame(std::move(f1), clock.now());
+    (void)node.pump(net, clock.now());
+    ack_all(pong2.pong.session_epoch, pong2.pong.server_isn, ns_from_ms(210));
+
+    const auto agg2 = node.aggregate_ledger();
+    RUDP_CHECK(agg2.conserved());
+    RUDP_CHECK_EQ(agg2.offered_count, 2u);
+    RUDP_CHECK_EQ(agg2.ontime, 2u);
+    RUDP_CHECK_EQ(node.collect_sessions()[0].packets.data_sent, 2u);
+  }
+
+  // 2) ControlQueue::push counts evicted non-critical datagrams when ABANDON
+  //    displaces a queued PING, and safely ignores 1-byte malformed entries.
+  {
+    ControlQueue q(2);
+    std::uint64_t dropped = 0;
+    auto make_ctrl = [](PacketType t) {
+      Datagram dg;
+      dg.bytes.assign(kHeaderSize, std::byte{0});
+      dg.bytes[1] = static_cast<std::byte>(t);
+      return dg;
+    };
+    RUDP_CHECK(q.push(make_ctrl(PacketType::PING), &dropped));
+    RUDP_CHECK(q.push(make_ctrl(PacketType::PONG), &dropped));
+    RUDP_CHECK_EQ(dropped, 0u);
+
+    // Incoming ABANDON evicts oldest non-ABANDON (PING) -> dropped == 1.
+    RUDP_CHECK(q.push(make_ctrl(PacketType::ABANDON), &dropped));
+    RUDP_CHECK_EQ(dropped, 1u);
+    RUDP_CHECK(q.push(make_ctrl(PacketType::ABANDON), &dropped));
+    RUDP_CHECK_EQ(dropped, 2u);
+
+    // Queue full of ABANDON: incoming 1-byte datagram must not read OOB.
+    Datagram tiny;
+    tiny.bytes = {std::byte{0x01}};
+    RUDP_CHECK(!q.push(std::move(tiny), &dropped));
+    RUDP_CHECK_EQ(dropped, 3u);
+  }
+}
+
 }  // namespace rudp_test

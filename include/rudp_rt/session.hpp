@@ -40,28 +40,32 @@ class ControlQueue {
   explicit ControlQueue(int capacity) : capacity_(capacity) {}
 
   const Datagram& front() const { return items_.front(); }
-  // Returns false when the datagram was dropped (counted by the caller).
-  bool push(Datagram&& dg) {
+  // Returns false when the incoming datagram was dropped; increments
+  // `dropped_out` whenever either an evicted entry or the incoming datagram
+  // is dropped.
+  bool push(Datagram&& dg, std::uint64_t* dropped_out = nullptr) {
     if (static_cast<int>(items_.size()) < capacity_) {
       items_.push_back(std::move(dg));
       return true;
     }
     const bool incoming_is_abandon =
-        !dg.bytes.empty() &&
+        dg.bytes.size() >= 2 &&
         static_cast<std::uint8_t>(dg.bytes[1]) ==
             static_cast<std::uint8_t>(PacketType::ABANDON);
     // Preserve ABANDON over non-critical control.
     for (std::size_t i = 0; i < items_.size(); ++i) {
       const bool is_abandon =
-          !items_[i].bytes.empty() &&
+          items_[i].bytes.size() >= 2 &&
           static_cast<std::uint8_t>(items_[i].bytes[1]) ==
               static_cast<std::uint8_t>(PacketType::ABANDON);
       if (incoming_is_abandon && !is_abandon) {
         items_.erase(items_.begin() + static_cast<std::ptrdiff_t>(i));
         items_.push_back(std::move(dg));
-        return true;  // caller counts the dropped non-critical item
+        if (dropped_out != nullptr) ++(*dropped_out);
+        return true;
       }
     }
+    if (dropped_out != nullptr) ++(*dropped_out);
     return false;  // bounded cap wins even for ABANDON
   }
 

@@ -88,7 +88,9 @@ void ClientNode::send_join(MonoNs now) {
                 control_header(stream_id_, PacketType::PING,
                                static_cast<std::uint16_t>(len)));
   encode_ping(dg.bytes.data() + kHeaderSize, ping);
-  if (!control_.push(std::move(dg))) counters_.control_queue_dropped++;
+  if (control_.push(std::move(dg), &counters_.control_queue_dropped)) {
+    control_.observe_hwm();
+  }
   counters_.pings_sent++;
   note_outbound(now);
 }
@@ -106,7 +108,9 @@ void ClientNode::queue_pong(std::uint32_t nonce, PongStatus status) {
                 control_header(stream_id_, PacketType::PONG,
                                static_cast<std::uint16_t>(encoded_pong_size())));
   encode_pong(dg.bytes.data() + kHeaderSize, pong);
-  if (!control_.push(std::move(dg))) counters_.control_queue_dropped++;
+  if (control_.push(std::move(dg), &counters_.control_queue_dropped)) {
+    control_.observe_hwm();
+  }
   counters_.pongs_sent++;
 }
 
@@ -237,9 +241,7 @@ void ClientNode::handle_abandon(const Datagram& dg, const Header& h,
 
 void ClientNode::route_control(std::vector<Datagram> dgs) {
   for (auto& dg : dgs) {
-    if (!control_.push(std::move(dg))) {
-      counters_.control_queue_dropped++;
-    } else {
+    if (control_.push(std::move(dg), &counters_.control_queue_dropped)) {
       control_.observe_hwm();
     }
   }
@@ -282,7 +284,9 @@ void ClientNode::check_keepalive(MonoNs now) {
                   control_header(stream_id_, PacketType::PING,
                                  static_cast<std::uint16_t>(len)));
     encode_ping(dgp.bytes.data() + kHeaderSize, ping);
-    if (!control_.push(std::move(dgp))) counters_.control_queue_dropped++;
+    if (control_.push(std::move(dgp), &counters_.control_queue_dropped)) {
+      control_.observe_hwm();
+    }
     counters_.pings_sent++;
     note_outbound(now);
   }

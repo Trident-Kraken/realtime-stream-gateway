@@ -344,13 +344,25 @@ Session* GatewayNode::create_session(const Endpoint& peer,
   const std::uint32_t epoch = rng_();
   const std::uint32_t isn = rng_();
   const SessionKey key{peer, stream_id};
-  // A dead session at this key must be replaced, not reused (map::emplace
-  // would return the stale entry and the client could never rejoin).
-  sessions_.erase(key);
+  SessionFrameLedger carried_frames;
+  PacketCounters carried_packets;
+  std::uint32_t gen = id;
+  if (auto prev = sessions_.find(key); prev != sessions_.end()) {
+    if (!prev->second.dead) {
+      teardown_session(prev->second.id, TeardownCause::REPLACED, now);
+    }
+    carried_frames = prev->second.frames;
+    carried_packets = prev->second.packets;
+    carried_packets += prev->second.sender.counters();
+    gen = std::max(id, prev->second.generation + 1);
+    sessions_.erase(prev);
+  }
   auto [it, inserted] = sessions_.emplace(
-      key, Session(id, id, peer, cfg_, epoch, isn, clock_));
+      key, Session(id, gen, peer, cfg_, epoch, isn, clock_));
   (void)inserted;
   Session& s = it->second;
+  s.frames = carried_frames;
+  s.packets = carried_packets;
   s.client_epoch = client_epoch;
   s.last_join_replace = now;
   s.note_established(now);
@@ -365,9 +377,7 @@ void GatewayNode::send_pong(Session& s, std::uint32_t nonce, PongStatus status,
   pong.session_epoch = epoch;
   pong.server_isn = isn;
   Datagram dg = build_pong(s.peer, s.stream_id, pong);
-  if (!s.control.push(std::move(dg))) {
-    s.packets.control_queue_dropped++;
-  } else {
+  if (s.control.push(std::move(dg), &s.packets.control_queue_dropped)) {
     s.control.observe_hwm();
   }
   counters_.pongs_sent++;
@@ -382,9 +392,7 @@ void GatewayNode::send_pong_node(const Endpoint& peer, std::uint32_t nonce,
   pong.session_epoch = epoch;
   pong.server_isn = isn;
   Datagram dg = build_pong(peer, cfg_.stream_id, pong);
-  if (!node_control_.push(std::move(dg))) {
-    counters_.control_queue_dropped++;
-  }
+  (void)node_control_.push(std::move(dg), &counters_.control_queue_dropped);
   counters_.pongs_sent++;
 }
 
@@ -459,9 +467,7 @@ void GatewayNode::route_sender_output(Session& s) {
   }
   if (!s.frames.conserved()) std::abort();
   for (auto& dg : out.control) {
-    if (!s.control.push(std::move(dg))) {
-      s.packets.control_queue_dropped++;
-    } else {
+    if (s.control.push(std::move(dg), &s.packets.control_queue_dropped)) {
       s.control.observe_hwm();
       control_hwm_ = std::max(control_hwm_, s.control.high_water());
     }
@@ -583,8 +589,8 @@ void GatewayNode::queue_ping_keepalive(Session& s, MonoNs now) {
   ping.client_epoch = s.client_epoch;
   s.arm_probe(ping.nonce, now);
   Datagram dg = build_ping(s.peer, s.stream_id, ping);
-  if (!s.control.push(std::move(dg))) {
-    s.packets.control_queue_dropped++;
+  if (s.control.push(std::move(dg), &s.packets.control_queue_dropped)) {
+    s.control.observe_hwm();
   }
   counters_.pings_sent++;
 }
